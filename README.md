@@ -1,11 +1,11 @@
-# 🏎️ Formula 1 Race Analytics & Prediction Dashboard
+# Formula 1 Race Analytics & Prediction Dashboard
 
 An interactive Formula 1 analytics system built with **Python** and **Streamlit**, designed to visualize historical race data and predict pit stop strategies using **machine learning**.  
 The project integrates open-source F1 telemetry APIs to provide data-driven race insights, performance metrics, and strategic simulations.
 
 ---
 
-## 🚀 Features
+## Features
 
 - **Live Race Data Integration**  
   Retrieves telemetry data from the [FastF1](https://theoehrly.github.io/Fast-F1/) and/or [OpenF1](https://openf1.org) APIs including lap times, tyre compounds, pit stops, and weather conditions.
@@ -25,7 +25,7 @@ The project integrates open-source F1 telemetry APIs to provide data-driven race
 
 ---
 
-## 🧠 Project Objectives
+## Project Objectives
 
 1. Collect and clean historical F1 race data from open APIs.  
 2. Build an interactive web-based dashboard for race visualization.  
@@ -35,7 +35,7 @@ The project integrates open-source F1 telemetry APIs to provide data-driven race
 
 ---
 
-## ⚙️ Tech Stack
+## Tech Stack
 
 - **Frontend/UI**: [Streamlit](https://streamlit.io)  
 - **Backend**: Python 3.11  
@@ -46,7 +46,7 @@ The project integrates open-source F1 telemetry APIs to provide data-driven race
 
 ---
 
-## 📊 Example Outputs
+## Example Outputs
 
 - Lap Time vs. Tyre Compound Graphs  
 - Predicted Pit Stop Laps with Confidence Intervals  
@@ -55,7 +55,7 @@ The project integrates open-source F1 telemetry APIs to provide data-driven race
 
 ---
 
-## ⚖️ Legal, Ethical & Licensing Notes
+## Legal, Ethical & Licensing Notes
 
 - This project is **unofficial** and **not associated with Formula 1 or its affiliates**.  
   > F1, FORMULA ONE, FORMULA 1, FIA FORMULA ONE WORLD CHAMPIONSHIP, GRAND PRIX  
@@ -66,7 +66,7 @@ The project integrates open-source F1 telemetry APIs to provide data-driven race
 
 ---
 
-## 🧪 Installation & Usage
+## Installation & Usage
 
 ### 1. Clone the Repository
 ```bash
