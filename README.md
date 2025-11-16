@@ -20,8 +20,8 @@ The project integrates open-source F1 telemetry APIs to provide data-driven race
 - **Simulation Mode**  
   Allows users to test alternative race strategies and compare predicted outcomes against historical results.
 
-- **Offline Data Support**  
-  Local caching ensures reliability even when API access is unavailable.
+- **Offline API Data Support**  
+  Local caching via cloud storage ensures reliability even when API access is unavailable.
 
 ---
 

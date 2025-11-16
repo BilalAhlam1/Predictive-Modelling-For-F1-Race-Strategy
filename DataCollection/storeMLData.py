@@ -21,7 +21,7 @@ async def process_driver(driver_tuple, semaphore):
         laps = await fetcher.get_laps(driver_number)
 
     if not laps:
-        print(f"⚠ No laps found for driver {acronym} ({driver_number})")
+        print(f"No laps found for driver {acronym} ({driver_number})")
         return []
 
     # Filter out bad entries that have no start time (e.g., DNF laps)
