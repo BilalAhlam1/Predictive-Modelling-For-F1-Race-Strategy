@@ -1,4 +1,5 @@
 import asyncio
+import os
 import aiohttp
 import pandas as pd
 from datetime import datetime, timedelta
@@ -7,7 +8,11 @@ import math
 import openf1_helper as of1
 
 SESSION_KEY = 9869
-OUTPUT_CSV = f"session_{SESSION_KEY}_lap_locations.csv"
+# Create output folder if it doesn't exist
+output_folder = "RaceDataCSV"
+os.makedirs(output_folder, exist_ok=True)
+OUTPUT_CSV = os.path.join(output_folder, "session_{SESSION_KEY}_lap_locations.csv")
+
 api = of1.api
 
 # ---------------------------
