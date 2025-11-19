@@ -3,6 +3,7 @@ import os
 import pandas as pd
 import openf1_helper as of1
 import storeRaceData as fetcher
+import weatherData as wd
 
 SESSION_KEY = fetcher.SESSION_KEY
 output_folder = "RaceDataCSV"
@@ -18,9 +19,6 @@ def get_tyre_info(row, stints_df):
     Calculates specific tyre compound and actual tyre life for a given lap
     by matching the driver and lap number to the stint range.
     """
-    # Find the stint where:
-    # 1. Driver matches
-    # 2. Lap is between Start and End of the stint
     stint = stints_df[
         (stints_df['driver_number'] == row['driver_number']) &
         (stints_df['lap_start'] <= row['lap_number']) &
@@ -30,7 +28,6 @@ def get_tyre_info(row, stints_df):
     if not stint.empty:
         s = stint.iloc[0]
         compound = s['compound']
-        # (Current Lap - Stint Start) + Laps already on tyre at start
         laps_on_tire = (row['lap_number'] - s['lap_start']) + s['tyre_age_at_start']
         return pd.Series([compound, laps_on_tire])
     else:
@@ -51,7 +48,7 @@ async def process_driver(driver_tuple, semaphore):
         print(f"No laps found for driver {acronym} ({driver_number})")
         return []
 
-    # Filter out laps with no start time (invalid laps)
+    # Filter out laps with no start time
     laps = [lap for lap in laps if lap.get("date_start")]
 
     print(f"Completed driver {acronym} ({driver_number}), fetched {len(laps)} laps")
@@ -61,18 +58,19 @@ async def process_driver(driver_tuple, semaphore):
 # Main async runner
 # ---------------------------
 async def main():
-    """Fetch laps (async) and stints (sync), merge them, and save specific ML columns."""
+    # 1. Fetch Stints & Weather
+    print(f"Fetching auxiliary data for session {SESSION_KEY}...")
     
-    # 1. Fetch Stints Synchronously using the helper
-    # runs before the async loop starts
-    print(f"Fetching stints for session {SESSION_KEY}...")
+    # --- Fetch Stints ---
     try:
-        # Using the clean helper method to get stints as DataFrame
         df_stints = api.get_dataframe('stints', {'session_key': SESSION_KEY})
         print(f"Fetched {len(df_stints)} stints.")
     except Exception as e:
         print(f"Error fetching stints: {e}")
         df_stints = pd.DataFrame()
+
+    # --- Fetch Weather ---
+    df_weather = wd.get_weather_data(SESSION_KEY)
 
     # 2. Setup Async Lap Fetching
     drivers = await fetcher.get_drivers() 
@@ -82,10 +80,8 @@ async def main():
     lap_tasks = [process_driver(d, semaphore) for d in drivers]
     
     print("Starting lap data collection...")
-    # only wait for lap tasks now, as stints are already loaded
     results = await asyncio.gather(*lap_tasks)
 
-    # Flatten the list of lists
     for l_list in results:
         all_laps.extend(l_list)
 
@@ -96,18 +92,38 @@ async def main():
     # 3. Convert Laps to DataFrame
     df_laps = pd.DataFrame(all_laps)
 
-    # 4. Apply the Stint logic to get Tyre info
+    # 4. Apply Stint logic
     print("Mapping tyre data to laps...")
     if not df_stints.empty:
         df_laps[['tire_compound', 'laps_on_tire']] = df_laps.apply(
             lambda row: get_tyre_info(row, df_stints), axis=1
         )
     else:
-        # Fallback if no stint data found
         df_laps['tire_compound'] = None
         df_laps['laps_on_tire'] = None
 
-    # 5. Select and Order Columns for ML
+    # 5. merge Weather Data
+    print("Merging weather data...")
+    if not df_weather.empty and 'date_start' in df_laps.columns:
+        # Ensure datetime format
+        df_laps['date_start'] = pd.to_datetime(df_laps['date_start'], format='mixed')
+        
+        # Sort by time
+        df_laps = df_laps.sort_values('date_start')
+        
+        # Find the weather record closest to the lap start time
+        df_laps = pd.merge_asof(
+            df_laps,
+            df_weather,
+            left_on='date_start',
+            right_on='date',
+            direction='nearest',
+            tolerance=pd.Timedelta('5min') # limit match to within 5 mins
+        )
+    else:
+        print("Skipping weather merge (missing data).")
+
+    # 6. Select and Order Columns for ML
     desired_columns = [
         'meeting_key', 'session_key', 'driver_number', 'lap_number', 
         'date_start', 'lap_duration', 
@@ -115,14 +131,16 @@ async def main():
         'st_speed', 'i1_speed', 'i2_speed', 
         'segments_sector_1', 'segments_sector_2', 'segments_sector_3',
         'is_pit_out_lap',
-        'tire_compound', 'laps_on_tire'
+        'tire_compound', 'laps_on_tire',
+        'rainfall', 'track_temperature', 'air_temperature', 'humidity'
     ]
     
-    # Intersection of desired vs actual to prevent KeyErrors
     final_cols = [c for c in desired_columns if c in df_laps.columns]
     df_final = df_laps[final_cols]
 
+    # Re-sort by Driver then Lap for readability in CSV
     df_final = df_final.sort_values(['driver_number', 'lap_number'])
+    
     df_final.to_csv(OUTPUT_CSV, index=False)
     
     print(f"Saved processed ML data to {OUTPUT_CSV} ({len(df_final)} rows)")
