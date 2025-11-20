@@ -4,6 +4,8 @@ import pandas as pd
 import openf1_helper as of1
 import storeRaceData as fetcher
 import weatherData as wd
+import sys, os; sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'DatabaseConnection')))
+import databaseManager as db
 
 SESSION_KEY = fetcher.SESSION_KEY
 output_folder = "RaceDataCSV"
@@ -136,14 +138,29 @@ async def main():
     ]
     
     final_cols = [c for c in desired_columns if c in df_laps.columns]
-    df_final = df_laps[final_cols]
+    df_final = df_laps[final_cols].copy()
+
+    # Convert List Columns to Strings for SQLite
+    list_cols = ['segments_sector_1', 'segments_sector_2', 'segments_sector_3']
+    for col in list_cols:
+        if col in df_final.columns:
+            # Convert list [2048, 2049] -> string "[2048, 2049]"
+            df_final[col] = df_final[col].astype(str)
 
     # Re-sort by Driver then Lap for readability in CSV
     df_final = df_final.sort_values(['driver_number', 'lap_number'])
     
-    df_final.to_csv(OUTPUT_CSV, index=False)
-    
-    print(f"Saved processed ML data to {OUTPUT_CSV} ({len(df_final)} rows)")
+    #df_final.to_csv(OUTPUT_CSV, index=False)
+    #print(f"Saved processed ML data to {OUTPUT_CSV} ({len(df_final)} rows)")
+    db.save_to_db(df_final, 'ml_training_data', if_exists='append')
+    print(f"ML data processing complete. Data saved to database table 'ml_training_data'.")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    "# Check if session data already exists in DB, otherwise run data collection"
+    Sessions = db.load_from_db(f"""SELECT * FROM ml_training_data WHERE session_key = {SESSION_KEY}""")
+    if Sessions.empty:
+        print(f"Session {SESSION_KEY} not found in database.")
+        asyncio.run(main())
+    else:
+        print(f"Session {SESSION_KEY} found in database.")
+        

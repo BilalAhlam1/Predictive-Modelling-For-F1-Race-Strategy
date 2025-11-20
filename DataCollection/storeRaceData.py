@@ -6,6 +6,8 @@ from datetime import datetime, timedelta
 import random
 import math
 import openf1_helper as of1
+import sys, os; sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'DatabaseConnection')))
+import databaseManager as db
 
 SESSION_KEY = 9869
 # Create output folder if it doesn't exist
@@ -81,7 +83,7 @@ async def get_locations(session, driver_number, start_iso, end_iso):
 async def process_driver(driver_tuple, semaphore):
     """Process a single driver to fetch lap locations."""
     acronym, driver_number = driver_tuple
-    print(f"⏳ Processing driver {acronym} ({driver_number})")
+    print(f"Processing driver {acronym} ({driver_number})")
     records = []
 
     laps = await get_laps(driver_number)
@@ -165,11 +167,22 @@ async def main():
     df = pd.DataFrame(all_records)
     df['timestamp'] = pd.to_datetime(df['timestamp'])
     df = df.sort_values('timestamp')
-    df.to_csv(OUTPUT_CSV, index=False)
-    print(f"Saved all lap locations to {OUTPUT_CSV} ({len(df)} rows)")
+
+    #df.to_csv(OUTPUT_CSV, index=False)
+    #print(f"Saved all lap locations to {OUTPUT_CSV} ({len(df)} rows)")
+
+    # Save to database
+    db.save_to_db(df, 'race_telemetry', if_exists='append')
+    print(f"Saved all lap locations to database table 'race_telemetry'.")
 
 # ---------------------------
 # Run
 # ---------------------------
 if __name__ == "__main__":
-    asyncio.run(main())
+    "# Check if session data already exists in DB, otherwise run data collection"
+    Sessions = db.load_from_db(f"""SELECT * FROM race_telemetry WHERE session_key = {SESSION_KEY}""")
+    if Sessions.empty:
+        print(f"Session {SESSION_KEY} not found in database.")
+        asyncio.run(main())
+    else:
+        print(f"Session {SESSION_KEY} found in database.")
