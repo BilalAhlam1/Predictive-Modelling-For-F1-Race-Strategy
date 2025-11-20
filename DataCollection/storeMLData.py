@@ -8,9 +8,6 @@ import sys, os; sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__f
 import databaseManager as db
 
 SESSION_KEY = fetcher.SESSION_KEY
-output_folder = "RaceDataCSV"
-os.makedirs(output_folder, exist_ok=True)
-OUTPUT_CSV = os.path.join(output_folder, f"MLData_session_{SESSION_KEY}.csv")
 api = of1.api
 
 # ---------------------------
@@ -39,15 +36,31 @@ def get_tyre_info(row, stints_df):
 # Lap Processor
 # ---------------------------
 async def process_driver(driver_tuple, semaphore):
-    """Fetch all laps for one driver."""
+    """Fetch all laps for one driver with basic retry logic."""
     acronym, driver_number = driver_tuple
     print(f"Processing driver {acronym} ({driver_number})")
 
-    async with semaphore:
-        laps = await fetcher.get_laps(driver_number)
+    # retry logic incase of transient failures
+    for attempt in range(3):
+        try:
+            async with semaphore:
+                # Add a tiny delay to ensure we don't hit rate limits even with the semaphore
+                await asyncio.sleep(0.5) 
+                laps = await fetcher.get_laps(driver_number)
+                
+            # If successful, break the retry loop
+            break 
+        except Exception as e:
+            if attempt < 2:
+                print(f"Error fetching laps for {acronym}: {e}. Retrying...")
+                await asyncio.sleep(2)
+            else:
+                print(f"Failed to fetch laps for {acronym} after 3 attempts.")
+                return []
 
     if not laps:
-        print(f"No laps found for driver {acronym} ({driver_number})")
+        # It's normal for some reserve drivers to have 0 laps in a race
+        # print(f"No laps found for driver {acronym} ({driver_number})") 
         return []
 
     # Filter out laps with no start time
@@ -60,10 +73,10 @@ async def process_driver(driver_tuple, semaphore):
 # Main async runner
 # ---------------------------
 async def fetchWithAPI():
-    # 1. Fetch Stints & Weather
+    # Fetch Stints & Weather
     print(f"Fetching auxiliary data for session {SESSION_KEY}...")
     
-    # --- Fetch Stints ---
+    # Fetch Stints
     try:
         df_stints = api.get_dataframe('stints', {'session_key': SESSION_KEY})
         print(f"Fetched {len(df_stints)} stints.")
@@ -71,31 +84,31 @@ async def fetchWithAPI():
         print(f"Error fetching stints: {e}")
         df_stints = pd.DataFrame()
 
-    # --- Fetch Weather ---
+    # Fetch Weather
     df_weather = wd.get_weather_data(SESSION_KEY)
 
-    # 2. Setup Async Lap Fetching
+    # Setup Async Lap Fetching
     drivers = await fetcher.get_drivers() 
     all_laps = []
     semaphore = asyncio.Semaphore(2)
 
     lap_tasks = [process_driver(d, semaphore) for d in drivers]
     
-    print("Starting lap data collection...")
+    print("Starting lap data collection")
     results = await asyncio.gather(*lap_tasks)
 
     for l_list in results:
         all_laps.extend(l_list)
 
     if not all_laps:
-        print("No lap data collected.")
+        print("No lap data collected")
         return
 
-    # 3. Convert Laps to DataFrame
+    # Convert Laps to DataFrame
     df_laps = pd.DataFrame(all_laps)
 
-    # 4. Apply Stint logic
-    print("Mapping tyre data to laps...")
+    # Apply Stint logic
+    print("Mapping tyre data to laps")
     if not df_stints.empty:
         df_laps[['tire_compound', 'laps_on_tire']] = df_laps.apply(
             lambda row: get_tyre_info(row, df_stints), axis=1
@@ -104,8 +117,8 @@ async def fetchWithAPI():
         df_laps['tire_compound'] = None
         df_laps['laps_on_tire'] = None
 
-    # 5. merge Weather Data
-    print("Merging weather data...")
+    # merge Weather Data
+    print("Merging weather data")
     if not df_weather.empty and 'date_start' in df_laps.columns:
         # Ensure datetime format
         df_laps['date_start'] = pd.to_datetime(df_laps['date_start'], format='mixed')
@@ -120,12 +133,12 @@ async def fetchWithAPI():
             left_on='date_start',
             right_on='date',
             direction='nearest',
-            tolerance=pd.Timedelta('5min') # limit match to within 5 mins
+            tolerance=pd.Timedelta('5min') # limit match to within 5 mins for interpolation
         )
     else:
         print("Skipping weather merge (missing data).")
 
-    # 6. Select and Order Columns for ML
+    # Select and Order Columns for ML
     desired_columns = [
         'meeting_key', 'session_key', 'driver_number', 'lap_number', 
         'date_start', 'lap_duration', 
@@ -144,10 +157,10 @@ async def fetchWithAPI():
     list_cols = ['segments_sector_1', 'segments_sector_2', 'segments_sector_3']
     for col in list_cols:
         if col in df_final.columns:
-            # Convert list [2048, 2049] -> string "[2048, 2049]"
+            # Convert list
             df_final[col] = df_final[col].astype(str)
 
-    # Re-sort by Driver then Lap for readability in CSV
+    # Re-sort by Driver then Lap for readability
     df_final = df_final.sort_values(['driver_number', 'lap_number'])
     return df_final
 

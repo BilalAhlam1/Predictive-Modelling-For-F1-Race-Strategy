@@ -9,33 +9,36 @@ import openf1_helper as of1
 import sys, os; sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'DatabaseConnection')))
 import databaseManager as db
 
-SESSION_KEY = 9939
-# Create output folder if it doesn't exist
-output_folder = "RaceDataCSV"
-os.makedirs(output_folder, exist_ok=True)
-OUTPUT_CSV = os.path.join(output_folder, "session_{SESSION_KEY}_lap_locations.csv")
-
+SESSION_KEY = 9939 # Example session key
 api = of1.api
 
 # ---------------------------
-# Async HTTP request helper with retries
+# Async HTTP request helper with retries increased to 5
 # ---------------------------
-async def fetch(session, url, params, max_retries=3):
+async def fetch(session, url, params, max_retries=5):
     """Fetch data with retries on 429 errors."""
     for attempt in range(max_retries):
         try:
+            timeout = aiohttp.ClientTimeout(total=60)  # 60 seconds timeout
             # Make the request with aiohttp session to return JSON data asynchronously
             async with session.get(url, params=params) as response:
                 if response.status == 429:
-                    wait = (2 ** attempt) + random.uniform(1,2) # Exponential backoff with jitter
+                    wait = (2 ** attempt) + random.uniform(2, 4) # Exponential backoff with jitter increased to 2-4 seconds
                     print(f"429 Too Many Requests. Retrying in {wait:.1f}s")
                     await asyncio.sleep(wait)
                     continue
+                if response.status >= 500:
+                    # Server error, wait and retry with increased delay
+                    wait = 5
+                    print(f"Server error {response.status}. Retrying in {wait}s...")
+                    await asyncio.sleep(wait)
+                    continue
+                    
                 response.raise_for_status()
                 data = await response.json()
                 return data
         except aiohttp.ClientError as e:
-            wait = (2 ** attempt) + random.uniform(1,2) # Exponential backoff with jitter
+            wait = (2 ** attempt) + random.uniform(1,2)
             print(f"HTTP error {e}. Retry in {wait:.1f}s")
             await asyncio.sleep(wait)
     print(f"Failed after {max_retries} retries for {params}")
@@ -95,51 +98,75 @@ async def process_driver(driver_tuple, semaphore):
     if not laps:
         return records
     
-    # Fetch locations in a single batch for all laps
+    # Determine full time range to fetch in chunks
+    last_lap_duration = laps[-1].get('lap_duration')
+    if last_lap_duration is None or (isinstance(last_lap_duration, float) and math.isnan(last_lap_duration)):
+        last_lap_duration = 0.0
+
+    start_time = pd.to_datetime(laps[0]['date_start'])
+    end_time = pd.to_datetime(laps[-1]['date_start']) + timedelta(seconds=last_lap_duration)
+
+    # chunking logic
+    # Split the total time into 30-minute chunks to avoid overloading the API
+    chunk_size = timedelta(minutes=30)
+    current_start = start_time
+    all_locs = []
+
     async with aiohttp.ClientSession() as session:
-        # Determine full batch range for this driver
-        last_lap_duration = laps[-1].get('lap_duration') # -1 to get last lap
-        # Handle invalid lap durations
-        if last_lap_duration is None or (isinstance(last_lap_duration, float) and math.isnan(last_lap_duration)):
-            last_lap_duration = 0.0
+        async with semaphore:
+            while current_start < end_time:
+                current_end = min(current_start + chunk_size, end_time)
+                
+                # Fetch chunk
+                chunk_data = await get_locations(
+                    session, 
+                    driver_number, 
+                    current_start.isoformat(), 
+                    current_end.isoformat()
+                )
+                all_locs.extend(chunk_data)
+                
+                # Move to next chunk
+                current_start = current_end
+                
+                # Small polite delay between chunks for the same driver to prevent rate limiting
+                await asyncio.sleep(0.5) 
 
-        start_time = pd.to_datetime(laps[0]['date_start']) # first lap start
-        end_time = pd.to_datetime(laps[-1]['date_start']) + timedelta(seconds=last_lap_duration) # last lap end
+    # If no locations found after all chunks, return empty
+    if not all_locs:
+        print(f"Warning: No locations found for {acronym}")
+        return records
 
-        start_iso = start_time.isoformat()
-        end_iso = end_time.isoformat()
+    # Assign locations back to individual laps
+    locs_df = pd.DataFrame(all_locs)
+    
+    # Drop duplicates that might occur at chunk boundaries
+    locs_df = locs_df.drop_duplicates(subset=['date'])
+    
+    locs_df['date'] = pd.to_datetime(locs_df['date'])
 
-        # Fetch all locations for this batch
-        async with semaphore: # semaphore is used to limit concurrent requests to avoid 429s (API rate limiting)
-            locs = await get_locations(session, driver_number, start_iso, end_iso)
+    # Optimized: Vectorized lookup or standard iteration (Standard is fine for this volume)
+    for lap in laps:
+        lap_start = pd.to_datetime(lap['date_start'])
+        lap_duration = lap.get('lap_duration') or 0.0
+        lap_end = lap_start + timedelta(seconds=lap_duration)
 
-        # Assign locations back to individual laps by iterating through laps, filtering locs by lap time range and appending data
-        if locs:
-            locs_df = pd.DataFrame(locs)
-            locs_df['date'] = pd.to_datetime(locs_df['date']) # Convert to datetime for filtering
-
-            for lap in laps:
-                lap_start = pd.to_datetime(lap['date_start'])
-                lap_duration = lap.get('lap_duration')
-                if lap_duration is None or (isinstance(lap_duration, float) and math.isnan(lap_duration)): # Handle invalid lap durations
-                    lap_duration = 0.0
-                lap_end = lap_start + timedelta(seconds=lap_duration) # Calculate lap end time
-
-                lap_locs = locs_df[(locs_df['date'] >= lap_start) & (locs_df['date'] < lap_end)] # Filter locations for this lap
-                for _, loc in lap_locs.iterrows():
-                    records.append({
-                        'session_key': SESSION_KEY,
-                        'driver_acronym': acronym,
-                        'driver_number': driver_number,
-                        'lap_number': lap['lap_number'],
-                        'lap_duration': lap_duration,
-                        'timestamp': loc['date'].isoformat(),
-                        'x': loc['x'],
-                        'y': loc['y'],
-                        'z': loc['z']
-                    })
-
-        await asyncio.sleep(0.1)  # small delay to reduce 429 risk
+        # Filter locations for this lap
+        mask = (locs_df['date'] >= lap_start) & (locs_df['date'] < lap_end)
+        lap_locs = locs_df[mask]
+        
+        for _, loc in lap_locs.iterrows():
+            records.append({
+                'session_key': SESSION_KEY,
+                'driver_acronym': acronym,
+                'driver_number': driver_number,
+                'lap_number': lap['lap_number'],
+                'lap_duration': lap_duration,
+                'timestamp': loc['date'].isoformat(),
+                'x': loc['x'],
+                'y': loc['y'],
+                'z': loc['z']
+            })
 
     print(f"Finished driver {acronym} ({len(records)} locations)")
     return records
@@ -167,13 +194,7 @@ async def fetchWithAPI():
     df = pd.DataFrame(all_records)
     df['timestamp'] = pd.to_datetime(df['timestamp'])
     df = df.sort_values('timestamp')
-
-    #df.to_csv(OUTPUT_CSV, index=False)
-    #print(f"Saved all lap locations to {OUTPUT_CSV} ({len(df)} rows)")
-
-    # Save to database
-    #db.save_to_db(df, 'race_telemetry', if_exists='append')
-    #print(f"Saved all lap locations to database table 'race_telemetry'.")
+    
     return df
 
 def fetchWithDB():
