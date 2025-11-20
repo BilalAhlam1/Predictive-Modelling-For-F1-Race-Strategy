@@ -14,8 +14,6 @@ DB_NAME = "f1_strategy.db"
 DB_PATH = os.path.join(BASE_DIR, DB_NAME)
 DB_URL = f"sqlite:///{DB_PATH}"
 
-print(f"💻 DATA MANAGER: Database locked to: {DB_PATH}")
-
 # --- DATABASE ENGINE ---
 engine = create_engine(DB_URL)
 
@@ -51,3 +49,16 @@ def load_from_db(query):
     except Exception as e:
         print(f"Error loading from DB: {e}")
         return pd.DataFrame()
+    
+def test_db_connection():
+    """
+    Tests the database connection by executing a simple query.
+    """
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(text("SELECT 1"))
+            print("Database connection successful.")
+            return True
+    except Exception as e:
+        print(f"Database connection failed: {e}")
+        return False

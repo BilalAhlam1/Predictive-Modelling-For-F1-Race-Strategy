@@ -59,7 +59,7 @@ async def process_driver(driver_tuple, semaphore):
 # ---------------------------
 # Main async runner
 # ---------------------------
-async def main():
+async def fetchWithAPI():
     # 1. Fetch Stints & Weather
     print(f"Fetching auxiliary data for session {SESSION_KEY}...")
     
@@ -149,18 +149,30 @@ async def main():
 
     # Re-sort by Driver then Lap for readability in CSV
     df_final = df_final.sort_values(['driver_number', 'lap_number'])
-    
-    #df_final.to_csv(OUTPUT_CSV, index=False)
-    #print(f"Saved processed ML data to {OUTPUT_CSV} ({len(df_final)} rows)")
-    db.save_to_db(df_final, 'ml_training_data', if_exists='append')
-    print(f"ML data processing complete. Data saved to database table 'ml_training_data'.")
+    return df_final
 
-if __name__ == "__main__":
+def fetchWithDB():
     "# Check if session data already exists in DB, otherwise run data collection"
     Sessions = db.load_from_db(f"""SELECT * FROM ml_training_data WHERE session_key = {SESSION_KEY}""")
     if Sessions.empty:
         print(f"Session {SESSION_KEY} not found in database.")
-        asyncio.run(main())
+        df = asyncio.run(fetchWithAPI())
+        db.save_to_db(df, 'ml_training_data', if_exists='append')
     else:
         print(f"Session {SESSION_KEY} found in database.")
+        df = db.load_from_db(f"""SELECT * FROM ml_training_data WHERE session_key = {SESSION_KEY}""")
+
+    return df
+
+
+if __name__ == "__main__":
+    if db.test_db_connection():
+        print("Database connection successful.")
+        df = fetchWithDB()
+        print(f"Data ready with {len(df)} rows for session {SESSION_KEY}.")
+    else: 
+        print("Database connection failed. Falling back to API fetch.")
+        df = asyncio.run(fetchWithAPI())
+        print(f"Data ready with {len(df)} rows for session {SESSION_KEY}.")
+
         

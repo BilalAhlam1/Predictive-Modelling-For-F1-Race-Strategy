@@ -9,7 +9,7 @@ import openf1_helper as of1
 import sys, os; sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'DatabaseConnection')))
 import databaseManager as db
 
-SESSION_KEY = 9869
+SESSION_KEY = 9939
 # Create output folder if it doesn't exist
 output_folder = "RaceDataCSV"
 os.makedirs(output_folder, exist_ok=True)
@@ -145,9 +145,9 @@ async def process_driver(driver_tuple, semaphore):
     return records
 
 # ---------------------------
-# Main async runner
+# async runner
 # ---------------------------
-async def main():
+async def fetchWithAPI():
     drivers = await get_drivers() # List of (acronym, number)
     all_records = []
 
@@ -172,17 +172,35 @@ async def main():
     #print(f"Saved all lap locations to {OUTPUT_CSV} ({len(df)} rows)")
 
     # Save to database
-    db.save_to_db(df, 'race_telemetry', if_exists='append')
-    print(f"Saved all lap locations to database table 'race_telemetry'.")
+    #db.save_to_db(df, 'race_telemetry', if_exists='append')
+    #print(f"Saved all lap locations to database table 'race_telemetry'.")
+    return df
+
+def fetchWithDB():
+    "# Check if session data already exists in DB, otherwise run data collection"
+    Sessions = db.load_from_db(f"""SELECT * FROM race_telemetry WHERE session_key = {SESSION_KEY}""")
+    if Sessions.empty:
+        print(f"Session {SESSION_KEY} not found in database.")
+        df = asyncio.run(fetchWithAPI())
+        db.save_to_db(df, 'race_telemetry', if_exists='append')
+    else:
+        print(f"Session {SESSION_KEY} found in database.")
+        df = db.load_from_db(f"""SELECT * FROM race_telemetry WHERE session_key = {SESSION_KEY}""")
+
+    return df
 
 # ---------------------------
 # Run
 # ---------------------------
 if __name__ == "__main__":
-    "# Check if session data already exists in DB, otherwise run data collection"
-    Sessions = db.load_from_db(f"""SELECT * FROM race_telemetry WHERE session_key = {SESSION_KEY}""")
-    if Sessions.empty:
-        print(f"Session {SESSION_KEY} not found in database.")
-        asyncio.run(main())
-    else:
-        print(f"Session {SESSION_KEY} found in database.")
+    "# Check if session data already exists in DB, otherwise run data collection through API"
+    if db.test_db_connection():
+        print("Database connection successful.")
+        df = fetchWithDB()
+        print(f"Data ready with {len(df)} rows for session {SESSION_KEY}.")
+    else: 
+        print("Database connection failed. Falling back to API fetch.")
+        df = asyncio.run(fetchWithAPI())
+        print(f"Data ready with {len(df)} rows for session {SESSION_KEY}.")
+
+        
