@@ -14,7 +14,7 @@ import storeRaceData as rd
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'DatabaseConnection')))
 import databaseManager as db
 
-SESSION_KEY = rd.SESSION_KEY
+SESSION_KEY = 9939
 
 def validate_data(db_df, api_df):
     """
@@ -96,7 +96,7 @@ def store():
     if db.test_db_connection():
         print("Database connection successful.")
         try:
-            df = ml.fetchWithDB() 
+            df = rd.fetchWithDB() 
         except AttributeError:
             print("Error: fetchWithDB function not found in storeMLData module.")
             return
@@ -104,7 +104,7 @@ def store():
         print(f"Data ready with {len(df)} rows for session {SESSION_KEY}.")
     else: 
         print("Database connection failed. Falling back to API fetch.")
-        df = ml.asyncio.run(ml.fetchWithAPI())
+        df = rd.asyncio.run(rd.fetchWithAPI())
         print(f"Data ready with {len(df)} rows for session {SESSION_KEY}.")
 
 if __name__ == "__main__":
@@ -116,7 +116,7 @@ if __name__ == "__main__":
     # Load the data from DB
     print(f"\nLoading Data from Database for Session {SESSION_KEY}")
     # Ensure table name matches what is saved to the table
-    db_df = db.load_from_db(f"SELECT * FROM ml_training_data WHERE session_key = {SESSION_KEY}")
+    db_df = db.load_from_db(f"SELECT * FROM race_telemetry WHERE session_key = {SESSION_KEY}")
     
     # Add Cool-down to prevent 429 Errors
     print("\nCooling down API for 10 seconds before verification fetch...")
@@ -124,7 +124,7 @@ if __name__ == "__main__":
     
     # Fetch fresh data from API
     print(f"--- Fetching Fresh Data from API for Verification ---")
-    api_df = ml.asyncio.run(ml.fetchWithAPI())
+    api_df = rd.asyncio.run(rd.fetchWithAPI())
     
     # Validate
     validate_data(db_df, api_df)

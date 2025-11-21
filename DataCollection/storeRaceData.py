@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 import aiohttp
 import pandas as pd
 from datetime import datetime, timedelta
@@ -8,8 +9,6 @@ import math
 import openf1_helper as of1
 import sys, os; sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'DatabaseConnection')))
 import databaseManager as db
-
-SESSION_KEY = 9939 # Example session key
 api = of1.api
 
 # ---------------------------
@@ -143,12 +142,14 @@ async def process_driver(driver_tuple, semaphore):
     # Drop duplicates that might occur at chunk boundaries
     locs_df = locs_df.drop_duplicates(subset=['date'])
     
-    locs_df['date'] = pd.to_datetime(locs_df['date'])
+    locs_df['date'] = pd.to_datetime(locs_df['date'], format = 'ISO8601', errors='coerce')
 
     # Optimized: Vectorized lookup or standard iteration (Standard is fine for this volume)
     for lap in laps:
         lap_start = pd.to_datetime(lap['date_start'])
-        lap_duration = lap.get('lap_duration') or 0.0
+        lap_duration = lap.get('lap_duration')
+        if lap_duration is None or (isinstance(lap_duration, float) and math.isnan(lap_duration)):
+            lap_duration = 0.0
         lap_end = lap_start + timedelta(seconds=lap_duration)
 
         # Filter locations for this lap
@@ -192,36 +193,116 @@ async def fetchWithAPI():
         return
 
     df = pd.DataFrame(all_records)
-    df['timestamp'] = pd.to_datetime(df['timestamp'])
+    df['timestamp'] = pd.to_datetime(df['timestamp'], format = 'ISO8601', errors='coerce')
     df = df.sort_values('timestamp')
     
     return df
 
-def fetchWithDB():
-    "# Check if session data already exists in DB, otherwise run data collection"
-    Sessions = db.load_from_db(f"""SELECT * FROM race_telemetry WHERE session_key = {SESSION_KEY}""")
-    if Sessions.empty:
-        print(f"Session {SESSION_KEY} not found in database.")
-        df = asyncio.run(fetchWithAPI())
-        db.save_to_db(df, 'race_telemetry', if_exists='append')
-    else:
-        print(f"Session {SESSION_KEY} found in database.")
-        df = db.load_from_db(f"""SELECT * FROM race_telemetry WHERE session_key = {SESSION_KEY}""")
-
+# ---------------------------
+# fetch from DB
+# ---------------------------
+def fetchFromDB(session_key):
+    """Fetch session data directly from the database."""
+    df = db.load_from_db(f"""SELECT * FROM race_telemetry WHERE session_key = {session_key}""")
     return df
 
 # ---------------------------
-# Run
+# update and store to DB
 # ---------------------------
-if __name__ == "__main__":
-    "# Check if session data already exists in DB, otherwise run data collection through API"
+def updateDB():
+    """
+    Checks DB for data, fetches from API if missing.
+    Returns True if successful, False if failed.
+    """
+    try:
+        # Check if session data already exists in DB
+        Sessions = db.load_from_db(f"SELECT * FROM race_telemetry WHERE session_key = {SESSION_KEY}")
+        
+        if Sessions.empty:
+            print(f"Session {SESSION_KEY} not found in database. Fetching...")
+            try:
+                df = asyncio.run(fetchWithAPI())
+            except Exception as e:
+                print(f"Error running async fetch: {e}")
+                return False
+
+            # Check if API actually returned data
+            if df is None or df.empty:
+                print(f"API returned no data for session {SESSION_KEY}.")
+                return False
+
+            try:
+                db.save_to_db(df, 'race_telemetry', if_exists='append')
+                print(f"Successfully saved session {SESSION_KEY} to database.")
+                return True
+            except Exception as e:
+                print(f"Error saving to database: {e}")
+                return False
+        else:
+            print(f"Session {SESSION_KEY} found in database.")
+            return True # Data exists, so this is a success
+
+    except Exception as e:
+        print(f"Unexpected error in updateDB for session {SESSION_KEY}: {e}")
+        return False
+
+
+# ---------------------------
+# check connection and store
+# ---------------------------
+def connectToDB(session_key):
+    """
+    Sets global session key and attempts update.
+    Returns True if successful, False otherwise.
+    """
+    global SESSION_KEY
+    SESSION_KEY = session_key
+    
     if db.test_db_connection():
         print("Database connection successful.")
-        df = fetchWithDB()
-        print(f"Data ready with {len(df)} rows for session {SESSION_KEY}.")
+        # Return the result of the update operation
+        if updateDB():
+            print(f"Data ready for session {SESSION_KEY}.")
+            return True
+        else:
+            print(f"Failed to update/verify data for session {SESSION_KEY}.")
+            return False
     else: 
         print("Database connection failed. Falling back to API fetch.")
-        df = asyncio.run(fetchWithAPI())
-        print(f"Data ready with {len(df)} rows for session {SESSION_KEY}.")
+        # If DB is down, we return False as we can't "update" the DB
+        return False
 
-        
+# ---------------------------
+# Fetch last five sessions and store if not present
+# ---------------------------
+def fetch_last_five_sessions():
+    """
+    Fetch the last five session keys and update DB.
+    Returns True only if ALL 5 sessions are successfully processed/verified.
+    """
+    try:
+        sessions_df = api.get_dataframe('sessions', {
+            'year': time.localtime().tm_year,
+            'session_type': 'Race'
+        })
+    except Exception as e:
+        print(f"Error fetching session list: {e}")
+        return False
+
+    if sessions_df.empty:
+        print("No sessions found.")
+        return False
+
+    sessions_df = sessions_df.sort_values('date_start')
+    recent_sessions = sessions_df.tail(5)
+    
+    all_success = True
+
+    for _, session in recent_sessions.iterrows():
+        # returns True/False based on success
+        result = connectToDB(session['session_key'])
+        if not result:
+            all_success = False
+            print(f"Issue processing session {session['session_key']}")
+
+    return all_success

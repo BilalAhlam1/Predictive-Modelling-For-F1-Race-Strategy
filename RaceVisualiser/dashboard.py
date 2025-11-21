@@ -1,4 +1,24 @@
+import asyncio
 import streamlit as st
+import pandas as pd
+import numpy as np
+import time
+import sys, os; sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'DataCollection')))
+import storeRaceData as raceData
+import openf1_helper as of1
+api = of1.api
+
+
+# --- RACE DATA CONFIGURATION ---
+with st.spinner('Loading recent races... please wait.'):
+    fetched = raceData.fetch_last_five_sessions()
+if not fetched:
+    st.error("Failed to load recent races. Please try again later.")
+    st.stop()
+else:
+    st.success("Recent races loaded successfully.")
+
+st.success("Done!")
 
 st.write(
     """
