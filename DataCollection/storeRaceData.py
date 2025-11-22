@@ -9,6 +9,7 @@ import math
 import openf1_helper as of1
 import sys, os; sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'DatabaseConnection')))
 import databaseManager as db
+import matplotlib.pyplot as plt
 api = of1.api
 
 # ---------------------------
@@ -326,3 +327,59 @@ def tableOfRaces():
             print()
 
     return recent_sessions
+
+def get_track_layout(session_key):
+    """
+    Fetches x, y coordinates for Lap 2 to generate a track map.
+    Returns a Pandas DataFrame with x and y.
+    """
+    # Find a driver who definitely completed Lap 2 and get their data
+    driver_query = f"""
+    SELECT driver_number 
+    FROM race_telemetry 
+    WHERE session_key = {session_key} AND lap_number = 2 
+    GROUP BY driver_number 
+    ORDER BY COUNT(*) DESC 
+    LIMIT 1
+    """
+    driver_df = db.load_from_db(driver_query)
+    
+    if driver_df.empty:
+        return None
+
+    target_driver = driver_df.iloc[0]['driver_number']
+
+    # Get the X, Y coordinates for that driver on Lap 2
+    track_query = f"""
+    SELECT x, y 
+    FROM race_telemetry 
+    WHERE session_key = {session_key} 
+    AND driver_number = {target_driver} 
+    AND lap_number = 2
+    """
+    return db.load_from_db(track_query)
+
+def plot_track_map(track_df):
+    """
+    Generates a minimalist, low-profile Matplotlib figure of the track.
+    """
+    if track_df is None or track_df.empty:
+        return None
+        
+    # prevents the map from pushing the card content down.
+    fig, ax = plt.subplots(figsize=(4, 1.5), dpi=100)
+    
+    # Plot the line
+    ax.plot(track_df['x'], track_df['y'], color='#FF1801', linewidth=2)
+    
+    # Remove all axes, borders, and whitespace
+    ax.axis('off')
+    ax.set_aspect('equal', 'datalim') # Keeps track proportions correct
+    
+    # Remove all margins so the track touches the edges of the image
+    fig.subplots_adjust(left=0, right=1, bottom=0, top=1)
+    
+    # Transparent background
+    fig.patch.set_alpha(0) 
+    
+    return fig

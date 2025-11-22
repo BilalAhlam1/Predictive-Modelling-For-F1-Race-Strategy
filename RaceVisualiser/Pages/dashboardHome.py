@@ -1,4 +1,5 @@
 import streamlit as st
+import matplotlib.pyplot as plt
 import pandas as pd
 import time
 import sys
@@ -16,6 +17,20 @@ st.markdown("""
     .race-type { font-size: 12px; color: #FF1801; font-weight: bold; margin-bottom: 2px; }
     </style>
 """, unsafe_allow_html=True)
+
+# --- Getter for Track Map Image ---
+@st.cache_data(show_spinner=False)
+def get_track_map_image(session_key):
+    """
+    Wrapper to fetch and plot track map.
+    Cached so we don't re-query the DB on every button click.
+    """
+    try:
+        df = raceData.get_track_layout(session_key)
+        fig = raceData.plot_track_map(df)
+        return fig
+    except Exception:
+        return None
 
 # --- Country to Flag Emoji ---
 def get_flag(country_name):
@@ -83,6 +98,15 @@ else:
                     # Date
                     date_str = race['date_start'].strftime("%d %b %Y")
                     st.markdown(f"<div class='race-date'>{date_str}</div>", unsafe_allow_html=True)
+
+                    # Track Map
+                    track_fig = get_track_map_image(race['session_key'])
+                    if track_fig:
+                        # Display the plot
+                        st.pyplot(track_fig, use_container_width=True, clear_figure=True)
+                    else:
+                        # Fallback space if no data
+                        st.markdown("<br><br>", unsafe_allow_html=True)
                     
                     # Action Button
                     if st.button("Select Race", key=f"btn_{race['session_key']}", use_container_width=True, type="primary" if is_selected else "secondary"):
