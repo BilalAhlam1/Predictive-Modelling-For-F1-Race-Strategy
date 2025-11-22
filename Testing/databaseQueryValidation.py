@@ -92,7 +92,7 @@ def validate_data(db_df, api_df):
         return False
 
 def store():
-    "# Store ML Data with DB Integration"
+    "# Store Data with DB Integration"
     if db.test_db_connection():
         print("Database connection successful.")
         try:
@@ -107,7 +107,7 @@ def store():
         df = rd.asyncio.run(rd.fetchWithAPI())
         print(f"Data ready with {len(df)} rows for session {SESSION_KEY}.")
 
-if __name__ == "__main__":
+def test_storage_and_validation():
     # Replace ml with rd to store race telemetry data instead and vice versa
 
     # Run the storage logic
@@ -128,3 +128,29 @@ if __name__ == "__main__":
     
     # Validate
     validate_data(db_df, api_df)
+
+def check_for_last_5_races():
+    "# check if last 5 races are in the database"
+    all_data_present = True
+    if db.test_db_connection():
+        print("Database connection successful.")
+        recent_races = rd.tableOfRaces().head(5)
+        for _, race in recent_races.iterrows():
+            if db.load_from_db(f"SELECT * FROM race_telemetry WHERE session_key = {race['session_key']}").empty:
+                print(f"Race {race['session_key']} not found in database. Fetching...")
+                all_data_present = False
+            else:
+                print(f"Race {race['session_key']} found in database.")
+
+    if all_data_present:
+        print("SUCCESS: All last 5 races are in the database.")
+    else:
+        print("ERR: Some races are missing from the database. Consider running the data fetch process.")
+
+
+if __name__ == "__main__":
+    #Test the storage and validation process
+    #test_storage_and_validation()
+
+    #Test for last 5 races in the database
+    check_for_last_5_races()

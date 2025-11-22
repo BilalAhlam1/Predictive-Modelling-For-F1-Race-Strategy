@@ -273,9 +273,9 @@ def connectToDB(session_key):
         return False
 
 # ---------------------------
-# Fetch last five sessions and store if not present
+# Update last five sessions and store if not present
 # ---------------------------
-def fetch_last_five_sessions():
+def update_last_five_sessions():
     """
     Fetch the last five session keys and update DB.
     Returns True only if ALL 5 sessions are successfully processed/verified.
@@ -306,3 +306,23 @@ def fetch_last_five_sessions():
             print(f"Issue processing session {session['session_key']}")
 
     return all_success
+
+def tableOfRaces():
+    sessions_df = api.get_dataframe('sessions', {
+    'year': time.localtime().tm_year,
+    'session_type': 'Race' 
+    })
+
+    # Display last 5 races
+    if not sessions_df.empty:
+        sessions_df = sessions_df.sort_values('date_start')
+        recent_sessions = sessions_df.tail(5)
+        print("Recent F1 Races:")
+        print("=" * 60)
+        for _, session in recent_sessions.iterrows():
+            print(f"{session['country_name']} GP - {session['location']}")
+            print(f"   Session Key: {session['session_key']}")
+            print(f"   Date: {session['date_start'][:10]}")
+            print()
+
+    return recent_sessions

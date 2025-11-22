@@ -7,7 +7,6 @@ import weatherData as wd
 import sys, os; sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'DatabaseConnection')))
 import databaseManager as db
 
-SESSION_KEY = fetcher.SESSION_KEY
 api = of1.api
 
 # ---------------------------
@@ -72,7 +71,7 @@ async def process_driver(driver_tuple, semaphore):
 # ---------------------------
 # Main async runner
 # ---------------------------
-async def fetchWithAPI():
+async def fetchWithAPI(SESSION_KEY):
     # Fetch Stints & Weather
     print(f"Fetching auxiliary data for session {SESSION_KEY}...")
     
@@ -164,7 +163,7 @@ async def fetchWithAPI():
     df_final = df_final.sort_values(['driver_number', 'lap_number'])
     return df_final
 
-def fetchWithDB():
+def fetchWithDB(SESSION_KEY):
     "# Check if session data already exists in DB, otherwise run data collection"
     Sessions = db.load_from_db(f"""SELECT * FROM ml_training_data WHERE session_key = {SESSION_KEY}""")
     if Sessions.empty:
@@ -178,14 +177,14 @@ def fetchWithDB():
     return df
 
 
-if __name__ == "__main__":
+def updateMLData(SESSION_KEY):
     if db.test_db_connection():
         print("Database connection successful.")
-        df = fetchWithDB()
+        df = fetchWithDB(SESSION_KEY)
         print(f"Data ready with {len(df)} rows for session {SESSION_KEY}.")
     else: 
         print("Database connection failed. Falling back to API fetch.")
-        df = asyncio.run(fetchWithAPI())
+        df = asyncio.run(fetchWithAPI(SESSION_KEY))
         print(f"Data ready with {len(df)} rows for session {SESSION_KEY}.")
 
         

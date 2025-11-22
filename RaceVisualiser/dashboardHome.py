@@ -10,16 +10,33 @@ api = of1.api
 
 
 # --- RACE DATA CONFIGURATION ---
-with st.spinner('Loading recent races... please wait.'):
-    fetched = raceData.fetch_last_five_sessions()
-if not fetched:
-    st.error("Failed to load recent races. Please try again later.")
-    st.stop()
-else:
-    st.success("Recent races loaded successfully.")
+if "data_loaded" not in st.session_state:
+    # Hide the sidebar and collapsed control while loading data
+    st.markdown(
+        """
+        <style>
+            [data-testid="stSidebar"] {display: none;}
+            [data-testid="collapsedControl"] {display: none;}
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
 
-st.success("Done!")
+    # If not, run the fetch logic
+    with st.spinner('Loading recent races... please wait.'):
+        fetched = raceData.update_last_five_sessions()
+    
+    if not fetched:
+        st.error("Failed to load recent races. Please check connection.")
+        st.stop() # Stop execution if critical data fails
+    else:
+        # Set the flag to True so this block is skipped next time
+        st.session_state["data_loaded"] = True
+        st.success("Recent races loaded successfully.")
+        time.sleep(1) # Small delay to show success messageq
+        st.rerun() # reoad the page to show sidebar
 
+# --- INFORMATION & ETHICS ---
 st.write(
     """
     # Predictive Modelling For F1 Race Strategy Dashboard
@@ -42,3 +59,8 @@ st.info(
     """,
     icon="ℹ️",
 )
+
+# --- PAGES ---
+home_page = st.Page("dashboardHome.py", title="Home", icon="🏠", default=True)
+replay_page = st.Page("pages/raceReplay.py", title="Race Replay", icon="🏎️")
+#strategy_page = st.Page("pages/strategy.py", title="Strategy Prediction", icon="📊")
