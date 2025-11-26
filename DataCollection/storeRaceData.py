@@ -251,7 +251,7 @@ def updateDB():
 # ---------------------------
 # check connection and store
 # ---------------------------
-def connectToDB(session_key):
+def check_and_update_DB(session_key):
     """
     Sets global session key and attempts update.
     Returns True if successful, False otherwise.
@@ -301,10 +301,19 @@ def update_last_five_sessions():
 
     for _, session in recent_sessions.iterrows():
         # returns True/False based on success
-        result = connectToDB(session['session_key'])
+        result = check_and_update_DB(session['session_key'])
         if not result:
             all_success = False
             print(f"Issue processing session {session['session_key']}")
+
+    #remove all sessions not in recent five from the database
+    recent_keys = sessions_df['session_key'].tail(5).tolist()
+    try:
+        db.load_from_db(f"""DELETE FROM race_telemetry WHERE session_key NOT IN {tuple(recent_keys)}""")
+        print("Old sessions cleaned up from database.")
+    except Exception as e:
+        print(f"Error cleaning up old sessions: {e}")
+        all_success = False
 
     return all_success
 
@@ -330,16 +339,20 @@ def tableOfRaces():
 
 def get_track_layout(session_key):
     """
-    Fetches x, y coordinates for Lap 2 to generate a track map.
-    Returns a Pandas DataFrame with x and y.
+    Fetches x, y coordinates for the entire race of the driver with the most laps.
+    This ensures we capture the Pit Lane (In/Out laps) as well as the main track.
     """
-    # Find a driver who definitely completed Lap 2 and get their data
+    if not db.test_db_connection():
+        return pd.DataFrame()
+
+    # 1. Find the driver who completed the MOST laps
+    # We assume the driver with the most laps likely pitted and finished the race.
     driver_query = f"""
     SELECT driver_number 
     FROM race_telemetry 
-    WHERE session_key = {session_key} AND lap_number = 2 
+    WHERE session_key = {session_key} 
     GROUP BY driver_number 
-    ORDER BY COUNT(*) DESC 
+    ORDER BY MAX(lap_number) DESC 
     LIMIT 1
     """
     driver_df = db.load_from_db(driver_query)
@@ -349,15 +362,27 @@ def get_track_layout(session_key):
 
     target_driver = driver_df.iloc[0]['driver_number']
 
-    # Get the X, Y coordinates for that driver on Lap 2
+    # 2. Get X, Y coordinates for ALL laps for that driver
+    # We order by timestamp to ensure the line draws sequentially without jumping
     track_query = f"""
     SELECT x, y 
     FROM race_telemetry 
     WHERE session_key = {session_key} 
-    AND driver_number = {target_driver} 
-    AND lap_number = 2
+    AND driver_number = {target_driver}
+    ORDER BY timestamp ASC
     """
-    return db.load_from_db(track_query)
+    
+    # 3. Load Data
+    track_df = db.load_from_db(track_query)
+    
+    # OPTIONAL OPTIMIZATION:
+    # Since we are drawing 50+ laps on top of each other, the dataframe might be huge (~200k rows).
+    # We can downsample it to make the map generation instant while keeping the shape.
+    # Taking every 5th point is usually enough for a high-res visual map.
+    if len(track_df) > 10000:
+        track_df = track_df.iloc[::5, :]
+        
+    return track_df
 
 def plot_track_map(track_df):
     """
@@ -383,3 +408,70 @@ def plot_track_map(track_df):
     fig.patch.set_alpha(0) 
     
     return fig
+
+
+# ---------------------------
+# Get race replay data
+# ---------------------------
+def get_race_replay_data(session_key):
+    """
+    Fetches data and aligns drivers to the nearest second.
+    """
+    if not db.test_db_connection():
+        return pd.DataFrame()
+
+    # Fetch Raw Data
+    query = f"""
+    SELECT 
+        driver_number,
+        driver_acronym, 
+        timestamp,
+        x, 
+        y, 
+        lap_duration,
+        lap_number 
+    FROM race_telemetry 
+    WHERE session_key = {session_key} 
+    AND lap_number >= 2 
+    ORDER BY timestamp ASC
+    """
+    
+    df = db.load_from_db(query)
+    
+    if df.empty:
+        return df
+
+    # Convert Timestamp to correct format
+    df['timestamp'] = pd.to_datetime(df['timestamp'], format='ISO8601', errors='coerce')
+
+    # Round timestamps to the nearest second for better track drawing sync
+    # This forces NOR with ..32.722 and VER with ..32.850 both into "17:04:33" which is close enough for visual purposes
+    df['timestamp_bucket'] = df['timestamp'].dt.round('1s')
+
+    # Group by Driver + Time Bucket
+    # We average X/Y just in case a driver has 2 points in the same second due to high sampling rate
+    df_resampled = (
+        df.groupby(['driver_acronym', 'driver_number', 'timestamp_bucket'])
+        [['x', 'y', 'lap_duration', 'lap_number']]
+        .mean()
+        .reset_index()
+    )
+
+    # Create Race Time Integer seconds for the Laps Slider which will be converted to min:sec and/or laps later
+    start_time = df_resampled['timestamp_bucket'].min()
+    df_resampled['race_time'] = (df_resampled['timestamp_bucket'] - start_time).dt.total_seconds().astype(int)
+
+    # Format & Return
+    # Rename bucket back to timestamp for clarity
+    df_resampled.rename(columns={'timestamp_bucket': 'timestamp'}, inplace=True)
+    
+    # Ensure integers for clean display
+    df_resampled['lap_number'] = df_resampled['lap_number'].astype(int)
+    df_resampled['driver_number'] = df_resampled['driver_number'].astype(int)
+
+    return df_resampled
+
+if __name__ == "__main__":
+    # For testing purposes
+    #print(get_race_replay_data(9858))
+    pass

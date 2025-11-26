@@ -55,7 +55,8 @@ replay_page = st.Page("Pages/raceReplay.py", title="Race Replay", icon="🏎️"
 # Create the Navigation Object
 pg = st.navigation({
     "Dashboard": [home_page],
-    "Analysis": [replay_page]
+    "Analysis": [replay_page],
+    "Prediction Model (Coming Soon)": []
 })
 
 # Run the selected page
