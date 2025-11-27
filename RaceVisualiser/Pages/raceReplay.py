@@ -8,6 +8,7 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'DataCollection')))
 import storeRaceData as raceData
 
+# --- RACE REPLAY SECTION ---
 st.header("Race Replay & Telemetry")
 
 if 'selected_session_key' not in st.session_state:
@@ -38,11 +39,12 @@ if "replay_loaded" not in st.session_state:
         unsafe_allow_html=True
     )
     
-# --- DATA HELPERS ---
+#-----------------TRACK LAYOUT------------------#
 @st.cache_data
 def get_static_track(key):
     return raceData.get_track_layout(key)
 
+#-----------------REPLAY DATA------------------#
 @st.cache_data
 def get_replay_data(key):
     """
@@ -51,7 +53,7 @@ def get_replay_data(key):
     df = raceData.get_race_replay_data(key)
     if df.empty: return df
     
-    # Get Driver Colors
+    #-----------------DRIVER COLORS------------------#
     df_colors = raceData.get_driver_colors(key)
     if not df_colors.empty:
         df = pd.merge(df, df_colors, on='driver_acronym', how='left')
@@ -62,7 +64,7 @@ def get_replay_data(key):
         df['team_colour'] = '#FF1508'
         
         
-    # Setup Time
+    #-----------------TIME SETUP------------------#
     df['timestamp'] = pd.to_datetime(df['timestamp'])
     start_time = df['timestamp'].min()
     df['race_time'] = (df['timestamp'] - start_time).dt.total_seconds()
@@ -112,6 +114,7 @@ def get_replay_data(key):
     
     return unified_df
 
+#-----------------LEADERBOARD------------------#
 def get_leaderboard_for_frame(frame_data):
     """Generates leaderboard standings for a given frame based on lap number and lap start time."""
     if frame_data.empty:
@@ -142,14 +145,18 @@ def get_leaderboard_for_frame(frame_data):
 def play_race_replay(session_key):
     
     # Load Data
-    with st.spinner(f"Optimizing {race_name} Data..."):
+    with st.spinner(f"Optimizing {race_name} Data"):
         df = get_replay_data(session_key)
         track_df = get_static_track(session_key)
 
         if df.empty or track_df is None:
             st.error("Data unavailable.")
             return
+        
+        # Mark as loaded for session loading position and avoid reloading
         st.session_state["replay_loaded"] = True
+        
+        #-----------------ANIMATION SETUP------------------#
         # Setting up the Figure
         fig = make_subplots(
             rows=1, cols=2,
@@ -220,7 +227,8 @@ def play_race_replay(session_key):
                 traces=[1, 2] # Table is trace 2 (index 1), Drivers is trace 1 (index 0)
             ))
 
-        # Initial Traces
+        #-----------------INITIAL TRACING------------------#
+        # Initial Frame Setup
         start_t = animation_timestamps[0]
         start_data = df[df['race_time'] == start_t]
         start_lb = get_leaderboard_for_frame(start_data)
@@ -301,10 +309,13 @@ def play_race_replay(session_key):
                 pad={"r": 10, "t": 10},
                 font=dict(color="black")
             )],
-            sliders=[] 
+            sliders=[] # No slider for now
         )
-
+        
+    #-----------------LAUNCH ANIMATION------------------#
     fig.frames = frames
-    st.plotly_chart(fig, use_container_width=True) # Render the figure in Streamlit
+    # Hide the Plotly modebar to remove selection and export tools
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
+# Start the Replay
 play_race_replay(session_key)

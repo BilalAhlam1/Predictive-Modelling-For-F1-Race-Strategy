@@ -7,7 +7,7 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'DataCollection')))
 import storeRaceData as raceData
 
-# --- CSS FOR CARDS ---
+# --- CSS FOR CARDS --- #
 st.markdown("""
     <style>
     div[data-testid="stVerticalBlock"] > div { gap: 1rem; }
@@ -18,7 +18,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- Getter for Track Map Image ---
+# --- Getter for Track Map Image --- #
 @st.cache_data(show_spinner=False)
 def get_track_map_image(session_key):
     """
@@ -32,7 +32,7 @@ def get_track_map_image(session_key):
     except Exception:
         return None
 
-# --- Country to Flag Emoji ---
+# --- Country to Flag Emoji --- #
 def get_flag(country_name):
     flags = {
         "Bahrain": "🇧🇭", "Saudi Arabia": "🇸🇦", "Australia": "🇦🇺", "Japan": "🇯🇵",
@@ -44,7 +44,7 @@ def get_flag(country_name):
     }
     return flags.get(country_name, "🏁")
 
-# --- ETHICS & DESCRIPTION SECTION ---
+# --- ETHICS & DESCRIPTION SECTION --- #
 st.write(
     """
     # Predictive Modelling For F1 Race Strategy Dashboard
@@ -63,7 +63,7 @@ st.info(
 
 st.divider()
 
-# --- RACE CALENDAR / SELECTION SECTION ---
+# --- RACE CALENDAR / SELECTION SECTION --- #
 session_df = raceData.tableOfRaces()
 
 if session_df.empty:
@@ -75,7 +75,6 @@ else:
     cols_per_row = 3
     rows = [session_df.iloc[i:i + cols_per_row] for i in range(0, len(session_df), cols_per_row)]
     
-
     for row_chunk in rows:
         cols = st.columns(cols_per_row)
         for idx, (_, race) in enumerate(row_chunk.iterrows()):
@@ -114,6 +113,6 @@ else:
                         st.session_state['selected_race_name'] = race['location']
                         st.rerun()
 
-# --- DEBUG / CONFIRMATION ---
+# --- DEBUG / CONFIRMATION --- #
 if 'selected_session_key' in st.session_state:
     st.success(f"**{st.session_state['selected_race_name']}** selected. Go to 'Race Replay' page to view analysis.")

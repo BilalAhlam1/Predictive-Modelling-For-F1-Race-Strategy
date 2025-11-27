@@ -356,7 +356,7 @@ def get_track_layout(session_key):
     if not db.test_db_connection():
         return pd.DataFrame()
 
-    # 1. Find the driver who completed the MOST laps
+    # Find the driver who completed the MOST laps
     # We assume the driver with the most laps likely pitted and finished the race.
     driver_query = f"""
     SELECT driver_number 
@@ -373,7 +373,7 @@ def get_track_layout(session_key):
 
     target_driver = driver_df.iloc[0]['driver_number']
 
-    # 2. Get X, Y coordinates for ALL laps for that driver
+    # Get X, Y coordinates for ALL laps for that driver
     # We order by timestamp to ensure the line draws sequentially without jumping
     track_query = f"""
     SELECT x, y 
@@ -383,13 +383,11 @@ def get_track_layout(session_key):
     ORDER BY timestamp ASC
     """
     
-    # 3. Load Data
+    # Load Data
     track_df = db.load_from_db(track_query)
     
-    # OPTIONAL OPTIMIZATION:
-    # Since we are drawing 50+ laps on top of each other, the dataframe might be huge (~200k rows).
-    # We can downsample it to make the map generation instant while keeping the shape.
-    # Taking every 5th point is usually enough for a high-res visual map.
+ 
+    # Limit to 10,000 points for performance via downsampling if necessary
     if len(track_df) > 10000:
         track_df = track_df.iloc[::5, :]
         
@@ -493,19 +491,17 @@ def get_driver_colors(session_key):
     default_color = "#FF1508" # Standard Formula 1 Red as fallback
     
     try:
-        # 1. Try to fetch data using your specific syntax
+        # Try to fetch data
         drivers = api.get_dataframe('drivers', {'session_key': session_key})
         
-        # 2. Check if data is valid
+        # Check if data is valid
         if drivers.empty:
             return pd.DataFrame(columns=['driver_acronym', 'team_colour'])
 
-        # 3. Process Colors (API usually returns '3671C6', we need '#3671C6')
-        # We also rename 'name_acronym' to 'driver_acronym' to match your telemetry data
+        # Process Colors
         drivers['team_colour'] = drivers.get('team_colour').apply(lambda x: f"#{x}" if x else default_color)
-
-        # Try to include a team name/constructor if available in the API response
-        # Common possible column names: 'team_name', 'constructor', 'constructor_name'
+        
+        # Find the team name column dynamically and assign to 'team_name'
         team_col = None
         for candidate in ('team_name', 'constructor', 'constructor_name'):
             if candidate in drivers.columns:
@@ -522,7 +518,7 @@ def get_driver_colors(session_key):
         return drivers[['name_acronym', 'team_colour', 'team_name']].rename(columns={'name_acronym': 'driver_acronym'})
 
     except Exception as e:
-        # EDGE CASE: API Unavailable, Network Error, or 'api' module missing
+        # API Unavailable, Network Error, or 'api' module missing
         print(f"API Error (Using default colors): {e}")
         return pd.DataFrame(columns=['driver_acronym', 'team_colour'])
 

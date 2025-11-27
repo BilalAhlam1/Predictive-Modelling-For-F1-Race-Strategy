@@ -5,10 +5,10 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'DataCollection')))
 import storeRaceData as raceData
 
-# --- PAGE CONFIG ---
+# --- PAGE CONFIG --- #
 st.set_page_config(layout="wide", page_title="F1 Strategy Dashboard")
 
-# --- DATA LOADING PHASE ---
+# --- DATA LOADING PHASE --- #
 # If data hasn't been checked yet, show spinner and hide sidebar
 if "data_loaded" not in st.session_state:
     
@@ -45,7 +45,7 @@ if "data_loaded" not in st.session_state:
         time.sleep(0.5) 
         st.rerun() # Reload to show the Navigation Bar
 
-# --- NAVIGATION PHASE ---
+# --- NAVIGATION PHASE --- #
 # This only runs after data is loaded and sidebar is allowed to show
 
 # Define the pages
