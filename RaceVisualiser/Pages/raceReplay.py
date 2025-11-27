@@ -17,8 +17,27 @@ if 'selected_session_key' not in st.session_state:
 session_key = st.session_state['selected_session_key']
 race_name = st.session_state.get('selected_race_name', 'Unknown GP')
 
-st.write(f"### Analyzing: {race_name}")
-
+# --- DATA LOADING PHASE ---
+# If data hasn't been checked yet, show spinner and hide sidebar
+if "replay_loaded" not in st.session_state:
+    
+    # Hide Sidebar, Header, and Center the Spinner
+    st.markdown(
+        """
+        <style>
+            /* Center the spinner vertically and horizontally */
+            .stSpinner {
+                position: fixed;
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+                text-align: center;
+            }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+    
 # --- DATA HELPERS ---
 @st.cache_data
 def get_static_track(key):
@@ -130,11 +149,11 @@ def play_race_replay(session_key):
         if df.empty or track_df is None:
             st.error("Data unavailable.")
             return
-
+        st.session_state["replay_loaded"] = True
         # Setting up the Figure
         fig = make_subplots(
             rows=1, cols=2,
-            column_widths=[0.85, 0.15], 
+            column_widths=[0.90, 0.40], 
             specs=[[{"type": "xy"}, {"type": "table"}]],
             horizontal_spacing=0.02
         )
@@ -172,7 +191,7 @@ def play_race_replay(session_key):
                         header=dict(values=["Pos", "Driver", "Team", "Lap"], 
                                     fill_color='#111', 
                                     font=dict(color='white', size=13),
-                                    height=23),
+                                    height=20),
                         cells=dict(
                             values=[lb_data.Pos, lb_data.Driver, lb_data.Team, lb_data.Lap],
                             # background color for all cells
@@ -192,7 +211,7 @@ def play_race_replay(session_key):
                                 ],
                                 size=13
                             ), 
-                            height=23
+                            height=20
                         )
                     )
                 ],
