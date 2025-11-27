@@ -32,6 +32,17 @@ def get_replay_data(key):
     df = raceData.get_race_replay_data(key)
     if df.empty: return df
     
+    # Get Driver Colors
+    df_colors = raceData.get_driver_colors(key)
+    if not df_colors.empty:
+        df = pd.merge(df, df_colors, on='driver_acronym', how='left')
+        # Fill any individual drivers that missed a color mapping
+        df['team_colour'] = df['team_colour'].fillna('#FF1508')
+    else:
+        # Fallback if API completely failed
+        df['team_colour'] = '#FF1508'
+        
+        
     # Setup Time
     df['timestamp'] = pd.to_datetime(df['timestamp'])
     start_time = df['timestamp'].min()
@@ -60,6 +71,9 @@ def get_replay_data(key):
         union_index = d_data.index.union(master_timeline)
         d_interp = d_data.reindex(union_index)
         
+        # Carry over Driver Color
+        d_color = d_data['team_colour'].iloc[0] if 'team_colour' in d_data.columns else '#FF1508'
+        
         # Interpolate Coords Linearly
         d_interp['x'] = d_interp['x'].interpolate(method='slinear', limit_direction='both')
         d_interp['y'] = d_interp['y'].interpolate(method='slinear', limit_direction='both')
@@ -70,6 +84,7 @@ def get_replay_data(key):
         # Filter to Master Timeline
         d_interp = d_interp.reindex(master_timeline)
         d_interp['driver_acronym'] = driver
+        d_interp['team_colour'] = d_color
         
         aligned_dfs.append(d_interp.reset_index().rename(columns={'index': 'race_time'})) # Reset index for concatenation
         
@@ -80,14 +95,29 @@ def get_replay_data(key):
 
 def get_leaderboard_for_frame(frame_data):
     """Generates leaderboard standings for a given frame based on lap number and lap start time."""
-    if frame_data.empty: return pd.DataFrame(columns=['Pos', 'Driver', 'Lap'])
+    if frame_data.empty:
+        # Keep team columns so callers can rely on them existing
+        return pd.DataFrame(columns=['Pos', 'Driver', 'Team', 'Lap', 'team_colour'])
+
+    # Frame data may have multiple rows per driver (shouldn't normally), so take a single representative
+    drivers = frame_data.groupby('driver_acronym', as_index=False).first()
 
     # Higher Lap First, Earlier Start Time Second
-    standings = frame_data.sort_values(by=['lap_number', 'lap_start_time'], ascending=[False, True])
+    standings = drivers.sort_values(by=['lap_number', 'lap_start_time'], ascending=[False, True]).copy()
 
-    standings['Pos'] = range(1, len(standings) + 1) # Assign Positions
-    
-    return standings[['Pos', 'driver_acronym', 'lap_number']].rename(columns={'driver_acronym': 'Driver', 'lap_number': 'Lap'})
+    standings['Pos'] = range(1, len(standings) + 1)  # Assign Positions
+
+    result = standings[['Pos', 'driver_acronym', 'lap_number', 'team_colour']].rename(
+        columns={'driver_acronym': 'Driver', 'lap_number': 'Lap', 'team_colour': 'team_colour'})
+
+    # Attach team name if present in the standings
+    if 'team_name' in standings.columns:
+        result['Team'] = standings['team_name'].fillna('')
+    else:
+        result['Team'] = ''
+
+    # Reorder columns to Pos, Driver, Team, Lap, team_colour
+    return result[['Pos', 'Driver', 'Team', 'Lap', 'team_colour']]
 
 # --- Main Replay System ---
 def play_race_replay(session_key):
@@ -104,7 +134,7 @@ def play_race_replay(session_key):
         # Setting up the Figure
         fig = make_subplots(
             rows=1, cols=2,
-            column_widths=[0.75, 0.25], 
+            column_widths=[0.85, 0.15], 
             specs=[[{"type": "xy"}, {"type": "table"}]],
             horizontal_spacing=0.02
         )
@@ -132,19 +162,38 @@ def play_race_replay(session_key):
                         ids=frame_data['driver_acronym'],
                         mode='markers+text',
                         text=frame_data['driver_acronym'],
-                        textfont=dict(size=15, color="white", weight="bold"),
-                        marker=dict(color="#FF1508", size=12, line=dict(width=1, color='black'))
+                        textposition="top center",
+                        cliponaxis=False, # Prevent text cutoff at edges
+                        textfont=dict(size=11, color="white", weight="bold"),
+                        marker=dict(color=frame_data['team_colour'], size=11, line=dict(width=1, color='white'))
                     ),
-                    # Trace Table
+                    # Trace Table - include Team column with colour-coded text
                     go.Table(
-                        header=dict(values=["Pos", "Driver", "Lap"], 
+                        header=dict(values=["Pos", "Driver", "Team", "Lap"], 
                                     fill_color='#111', 
                                     font=dict(color='white', size=13),
                                     height=23),
-                        cells=dict(values=[lb_data.Pos, lb_data.Driver, lb_data.Lap],
-                                fill_color='#1e1e1e', 
-                                font=dict(color='white', size=13), 
-                                height=23)
+                        cells=dict(
+                            values=[lb_data.Pos, lb_data.Driver, lb_data.Team, lb_data.Lap],
+                            # background color for all cells
+                            fill_color=[
+                                ['#1e1e1e'] * len(lb_data),
+                                ['#1e1e1e'] * len(lb_data),
+                                ['#1e1e1e'] * len(lb_data),
+                                ['#1e1e1e'] * len(lb_data)
+                            ],
+                            # colour the Team text using team_colour per-row, fallback to white
+                            font=dict(
+                                color=[
+                                    ['white'] * len(lb_data),
+                                    ['white'] * len(lb_data),
+                                    lb_data['team_colour'].tolist() if 'team_colour' in lb_data.columns else ['white'] * len(lb_data),
+                                    ['white'] * len(lb_data)
+                                ],
+                                size=13
+                            ), 
+                            height=23
+                        )
                     )
                 ],
                 layout=go.Layout(title_text=f"Current Lap: {curr_lap}"),
@@ -167,14 +216,32 @@ def play_race_replay(session_key):
         fig.add_trace(go.Scatter(
             x=start_data['x'], y=start_data['y'],
             mode='markers+text', text=start_data['driver_acronym'],
-            marker=dict(color='#FF3B30', size=11)
+            textposition="top center",
+            cliponaxis=False,
+            textfont=dict(size=11, color="white", weight="bold"),
+            marker=dict(color=start_data['team_colour'], size=10, line=dict(width=1, color='white'))
         ), row=1, col=1)
 
         # Trace Leaderboard Table
         fig.add_trace(go.Table(
-            header=dict(values=["Pos", "Driver", "Lap"], fill_color='#111', font=dict(color='white')),
-            cells=dict(values=[start_lb.Pos, start_lb.Driver, start_lb.Lap],
-                    fill_color='#1e1e1e', font=dict(color='white'))
+            header=dict(values=["Pos", "Driver", "Team", "Lap"], fill_color='#111', font=dict(color='white')),
+            cells=dict(
+                values=[start_lb.Pos, start_lb.Driver, start_lb.Team, start_lb.Lap],
+                # background color for all cells
+                fill_color=[
+                    ['#1e1e1e'] * len(start_lb),
+                    ['#1e1e1e'] * len(start_lb),
+                    ['#1e1e1e'] * len(start_lb),
+                    ['#1e1e1e'] * len(start_lb)
+                ],
+                # colour the Team text using team_colour per-row, fallback to white
+                font=dict(color=[
+                    ['white'] * len(start_lb),
+                    ['white'] * len(start_lb),
+                    start_lb['team_colour'].tolist() if 'team_colour' in start_lb.columns else ['white'] * len(start_lb),
+                    ['white'] * len(start_lb)
+                ])
+            )
         ), row=1, col=2)
 
         # Final Layout

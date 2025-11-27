@@ -482,6 +482,50 @@ def get_race_replay_data(session_key):
 
     return df_resampled
 
+# ---------------------------
+# Get driver details
+# ---------------------------
+def get_driver_colors(session_key):
+    """
+    Fetches driver colors using the specific API method requested.
+    Includes edge case handling if API is unavailable.
+    """
+    default_color = "#FF1508" # Standard Formula 1 Red as fallback
+    
+    try:
+        # 1. Try to fetch data using your specific syntax
+        drivers = api.get_dataframe('drivers', {'session_key': session_key})
+        
+        # 2. Check if data is valid
+        if drivers.empty:
+            return pd.DataFrame(columns=['driver_acronym', 'team_colour'])
+
+        # 3. Process Colors (API usually returns '3671C6', we need '#3671C6')
+        # We also rename 'name_acronym' to 'driver_acronym' to match your telemetry data
+        drivers['team_colour'] = drivers.get('team_colour').apply(lambda x: f"#{x}" if x else default_color)
+
+        # Try to include a team name/constructor if available in the API response
+        # Common possible column names: 'team_name', 'constructor', 'constructor_name'
+        team_col = None
+        for candidate in ('team_name', 'constructor', 'constructor_name'):
+            if candidate in drivers.columns:
+                team_col = candidate
+                break
+
+        if team_col is None:
+            # Fallback to an empty string so callers can rely on the column existing
+            drivers['team_name'] = ''
+        else:
+            drivers['team_name'] = drivers[team_col]
+
+        # Select only what we need
+        return drivers[['name_acronym', 'team_colour', 'team_name']].rename(columns={'name_acronym': 'driver_acronym'})
+
+    except Exception as e:
+        # EDGE CASE: API Unavailable, Network Error, or 'api' module missing
+        print(f"API Error (Using default colors): {e}")
+        return pd.DataFrame(columns=['driver_acronym', 'team_colour'])
+
 if __name__ == "__main__":
     # For testing purposes
     #print(get_race_replay_data(9858))
