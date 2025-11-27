@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'DataCollection')))
@@ -8,7 +10,6 @@ import storeRaceData as raceData
 
 st.header("Race Replay & Telemetry")
 
-# Check if user selected a race
 if 'selected_session_key' not in st.session_state:
     st.warning("No race selected.")
     st.stop()
@@ -17,142 +18,207 @@ session_key = st.session_state['selected_session_key']
 race_name = st.session_state.get('selected_race_name', 'Unknown GP')
 
 st.write(f"### Analyzing: {race_name}")
-st.caption(f"Session Key: {session_key}")
 
-# --- GET_STATIC_TRACK ---
+# --- DATA HELPERS ---
 @st.cache_data
 def get_static_track(key):
     return raceData.get_track_layout(key)
 
-# --- ANIMATE_RACE ---
+@st.cache_data
+def get_replay_data(key):
+    """
+    Fetches and processes race replay data for visualization.
+    """
+    df = raceData.get_race_replay_data(key)
+    if df.empty: return df
+    
+    # Setup Time
+    df['timestamp'] = pd.to_datetime(df['timestamp'])
+    start_time = df['timestamp'].min()
+    df['race_time'] = (df['timestamp'] - start_time).dt.total_seconds()
+    df = df.sort_values('race_time')
+
+    # Determine Lap Start Times
+    lap_start_times = df.groupby(['driver_acronym', 'lap_number'])['race_time'].min().reset_index()
+    lap_start_times.rename(columns={'race_time': 'lap_start_time'}, inplace=True)
+    df = pd.merge(df, lap_start_times, on=['driver_acronym', 'lap_number'], how='left')
+
+    # Create Master Timeline to synchronize all drivers (fixes inconsistent leaderboard issues)
+    # Changed from 0.2 to 1.0 to synchronsie to 1 second intervals for performance
+    min_t = df['race_time'].min() # Starting from first timestamp
+    max_t = df['race_time'].max() # Ending at last timestamp
+    master_timeline = np.arange(min_t, max_t, 1.0) 
+    
+    aligned_dfs = []
+    
+    # Align each driver's data to the 'master' timeline which has consistent 1.0s intervals for better animation
+    for driver in df['driver_acronym'].unique():
+        d_data = df[df['driver_acronym'] == driver].set_index('race_time')
+        d_data = d_data[~d_data.index.duplicated(keep='first')]
+        
+        # Expand index to include master timeline and interpolate
+        union_index = d_data.index.union(master_timeline)
+        d_interp = d_data.reindex(union_index)
+        
+        # Interpolate Coords Linearly
+        d_interp['x'] = d_interp['x'].interpolate(method='slinear', limit_direction='both')
+        d_interp['y'] = d_interp['y'].interpolate(method='slinear', limit_direction='both')
+        
+        # Fill Metadata
+        d_interp = d_interp.ffill().bfill()
+        
+        # Filter to Master Timeline
+        d_interp = d_interp.reindex(master_timeline)
+        d_interp['driver_acronym'] = driver
+        
+        aligned_dfs.append(d_interp.reset_index().rename(columns={'index': 'race_time'})) # Reset index for concatenation
+        
+    unified_df = pd.concat(aligned_dfs)
+    unified_df['lap_number'] = unified_df['lap_number'].fillna(0).astype(int) # Fill missing laps as 0
+    
+    return unified_df
+
+def get_leaderboard_for_frame(frame_data):
+    """Generates leaderboard standings for a given frame based on lap number and lap start time."""
+    if frame_data.empty: return pd.DataFrame(columns=['Pos', 'Driver', 'Lap'])
+
+    # Higher Lap First, Earlier Start Time Second
+    standings = frame_data.sort_values(by=['lap_number', 'lap_start_time'], ascending=[False, True])
+
+    standings['Pos'] = range(1, len(standings) + 1) # Assign Positions
+    
+    return standings[['Pos', 'driver_acronym', 'lap_number']].rename(columns={'driver_acronym': 'Driver', 'lap_number': 'Lap'})
+
+# --- Main Replay System ---
 def play_race_replay(session_key):
     
-    # Load Dynamic Driver Data
-    df = raceData.get_race_replay_data(session_key)
-    # Load Static Track Data
-    track_df = get_static_track(session_key)
+    # Load Data
+    with st.spinner(f"Optimizing {race_name} Data..."):
+        df = get_replay_data(session_key)
+        track_df = get_static_track(session_key)
 
-    if df.empty:
-        st.error("No race replay data available.")
-        return
+        if df.empty or track_df is None:
+            st.error("Data unavailable.")
+            return
 
-    
-    if track_df is None or track_df.empty:
-        st.error("Could not load track layout.")
-        return
+        # Setting up the Figure
+        fig = make_subplots(
+            rows=1, cols=2,
+            column_widths=[0.75, 0.25], 
+            specs=[[{"type": "xy"}, {"type": "table"}]],
+            horizontal_spacing=0.02
+        )
 
-    # Define Axis Ranges For Consistent View which keeps the track centered and padded from the frame edges
-    padding = 500
-    x_min, x_max = track_df['x'].min() - padding, track_df['x'].max() + padding
-    y_min, y_max = track_df['y'].min() - padding, track_df['y'].max() + padding
+        # Define Axis Ranges
+        padding = 400
+        x_min, x_max = track_df['x'].min() - padding, track_df['x'].max() + padding
+        y_min, y_max = track_df['y'].min() - padding, track_df['y'].max() + padding
 
-    # Process Timestamps
-    all_timestamps = sorted(df['race_time'].unique())
-    animation_timestamps = all_timestamps[::2] # Animation frames that skip every other timestamp for performance
-
-    # Generate Animation Frames
-    frames = []
-    for t in animation_timestamps: 
-        frame_data = df[df['race_time'] == t]
+        # Generate Frames
+        # We use every single timestamp for smoothness
+        animation_timestamps = df['race_time'].unique()
         
-        # Determine max lap for label
-        curr_lap = int(frame_data['lap_number'].max()) if not frame_data.empty else 0
+        frames = []
+        for t in animation_timestamps:
+            frame_data = df[df['race_time'] == t]
+            lb_data = get_leaderboard_for_frame(frame_data)
+            curr_lap = int(frame_data['lap_number'].max()) if not frame_data.empty else 0
 
-        frames.append(go.Frame(
-            data=[go.Scatter(
-                x=frame_data['x'],
-                y=frame_data['y'],
-                # This links points by Name, not by list index.
-                # Prevents issue with drivers floating when the list of drivers changes.
-                ids=frame_data['driver_acronym'],
-                mode='markers+text',
-                text=frame_data['driver_acronym'],
-                textposition="top center",
-                textfont=dict(size=10, color="white"),
-                marker=dict(color='red', size=10, line=dict(width=1, color='white'))
+            frames.append(go.Frame(
+                data=[
+                    # Trace Drivers
+                    go.Scatter(
+                        x=frame_data['x'] + 5, y=frame_data['y'],
+                        ids=frame_data['driver_acronym'],
+                        mode='markers+text',
+                        text=frame_data['driver_acronym'],
+                        textfont=dict(size=15, color="white", weight="bold"),
+                        marker=dict(color="#FF1508", size=12, line=dict(width=1, color='black'))
+                    ),
+                    # Trace Table
+                    go.Table(
+                        header=dict(values=["Pos", "Driver", "Lap"], 
+                                    fill_color='#111', 
+                                    font=dict(color='white', size=13),
+                                    height=23),
+                        cells=dict(values=[lb_data.Pos, lb_data.Driver, lb_data.Lap],
+                                fill_color='#1e1e1e', 
+                                font=dict(color='white', size=13), 
+                                height=23)
+                    )
+                ],
+                layout=go.Layout(title_text=f"Current Lap: {curr_lap}"),
+                name=str(t),
+                traces=[1, 2] # Table is trace 2 (index 1), Drivers is trace 1 (index 0)
+            ))
+
+        # Initial Traces
+        start_t = animation_timestamps[0]
+        start_data = df[df['race_time'] == start_t]
+        start_lb = get_leaderboard_for_frame(start_data)
+
+        # Trace Background Track
+        fig.add_trace(go.Scatter(
+            x=track_df['x'], y=track_df['y'],
+            mode='lines', line=dict(color='#444', width=5), hoverinfo='skip'
+        ), row=1, col=1)
+
+        # Trace Drivers
+        fig.add_trace(go.Scatter(
+            x=start_data['x'], y=start_data['y'],
+            mode='markers+text', text=start_data['driver_acronym'],
+            marker=dict(color='#FF3B30', size=11)
+        ), row=1, col=1)
+
+        # Trace Leaderboard Table
+        fig.add_trace(go.Table(
+            header=dict(values=["Pos", "Driver", "Lap"], fill_color='#111', font=dict(color='white')),
+            cells=dict(values=[start_lb.Pos, start_lb.Driver, start_lb.Lap],
+                    fill_color='#1e1e1e', font=dict(color='white'))
+        ), row=1, col=2)
+
+        # Final Layout
+        fig.update_layout(
+            height=650,
+            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor='rgba(0,0,0,0)',
+            title=f"Race Start",
+            xaxis=dict(range=[x_min, x_max], visible=False, fixedrange=True),
+            yaxis=dict(range=[y_min, y_max], visible=False, fixedrange=True, scaleanchor="x", scaleratio=1),
+            showlegend=False,
+
+            updatemenus=[dict(
+                type="buttons",
+                showactive=True,
+                x=0.05, y=-0.1,
+                xanchor="left", yanchor="top",
+                direction="left",
+                buttons=[
+                    dict(label="▶ Play",
+                        method="animate",
+                        args=[None, dict(
+                            # Speed Optimization:
+                            # 50ms per frame. 
+                            # Since data is 1.0s interval, this will be 20x Real Time Speed.
+                            # To be adjusted based on preference by user via multiplier later.
+                            frame=dict(duration=80, redraw=True), 
+                            transition=dict(duration=80, easing="linear"),
+                            fromcurrent=True
+                        )]),
+                    dict(label="⏸ Pause",
+                        method="animate",
+                        args=[[None], dict(frame=dict(duration=0, redraw=False), mode="immediate")])
+                ],
+                bgcolor="white",
+                bordercolor="#444",
+                borderwidth=1,
+                pad={"r": 10, "t": 10},
+                font=dict(color="black")
             )],
-            name=str(t), 
-            traces=[1] 
-        ))
+            sliders=[] 
+        )
 
-    # Generate Slider Steps (Laps)
-    # Filter to only times that exist in our animation_timestamps
-    df_anim = df[df['race_time'].isin(animation_timestamps)]
-    lap_start_times = df_anim.groupby('lap_number')['race_time'].min().sort_index()
-    
-    slider_steps = []
-    for lap, start_time in lap_start_times.items():
-        slider_steps.append(dict(
-            method="animate",
-            args=[[str(start_time)], dict(frame=dict(duration=0, redraw=False), mode="immediate")],
-            label=str(lap)
-        ))
+    fig.frames = frames
+    st.plotly_chart(fig, use_container_width=True) # Render the figure in Streamlit
 
-    # Build Figure
-    # Get initial data for the very first frame
-    start_data = df[df['race_time'] == animation_timestamps[0]]
-
-    fig = go.Figure(
-        data=[
-            # Trace Static Track
-            go.Scatter(
-                x=track_df['x'],
-                y=track_df['y'],
-                mode='lines',
-                line=dict(color='#444', width=4),
-                hoverinfo='skip',
-                name='Track'
-            ),
-            # Trace Initial Drivers
-            go.Scatter(
-                x=start_data['x'],
-                y=start_data['y'],
-                ids=start_data['driver_acronym'], # link points by Name
-                mode='markers',
-                marker=dict(color='red', size=10),
-                name='Drivers'
-            )
-        ],
-        frames=frames
-    )
-
-    # Layout
-    fig.update_layout(
-        height=700,
-        plot_bgcolor='rgba(0,0,0,0)',
-        paper_bgcolor='rgba(0,0,0,0)',
-        xaxis=dict(range=[x_min, x_max], visible=False, fixedrange=True),
-        yaxis=dict(range=[y_min, y_max], visible=False, fixedrange=True, scaleanchor="x", scaleratio=1),
-        showlegend=False,
-        title="Race Replay",
-        
-        updatemenus=[dict(
-            type="buttons",
-            showactive=False,
-            x=0.1, y=0,
-            buttons=[
-                dict(label="Play",
-                     method="animate",
-                     args=[None, dict(frame=dict(duration=100, redraw=False), fromcurrent=True)]),
-                dict(label="Pause",
-                     method="animate",
-                     args=[[None], dict(frame=dict(duration=0, redraw=False), mode="immediate")])
-            ]
-        )],
-        
-        sliders=[dict(
-            currentvalue={
-                "visible": True, 
-                "prefix": "Start of Lap: ", 
-                "xanchor": "right",
-                "font": {"size": 20, "color": "white"}
-            },
-            pad={"t": 50, "b": 10},
-            steps=slider_steps 
-        )]
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
-
-# --- RUN ---
 play_race_replay(session_key)

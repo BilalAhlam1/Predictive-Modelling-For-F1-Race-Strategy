@@ -307,10 +307,21 @@ def update_last_five_sessions():
             print(f"Issue processing session {session['session_key']}")
 
     #remove all sessions not in recent five from the database
+    # UPDATE: Handle edge cases for NOT IN clause with fewer than 5 sessions
     recent_keys = sessions_df['session_key'].tail(5).tolist()
     try:
-        db.load_from_db(f"""DELETE FROM race_telemetry WHERE session_key NOT IN {tuple(recent_keys)}""")
-        print("Old sessions cleaned up from database.")
+        if len(recent_keys) == 0:
+            # Danger: If list is empty, NOT IN () is invalid SQL
+            print("No recent keys provided. Skipping delete to prevent error.")
+        elif len(recent_keys) == 1:
+            # Handle single item (remove trailing comma)
+            keys_str = f"({recent_keys[0]})"
+            query = f"DELETE FROM race_telemetry WHERE session_key NOT IN {keys_str}"
+            db.execute_query(query)
+        else:
+            # Handle multiple items
+            query = f"DELETE FROM race_telemetry WHERE session_key NOT IN {tuple(recent_keys)}"
+            db.execute_query(query)
     except Exception as e:
         print(f"Error cleaning up old sessions: {e}")
         all_success = False

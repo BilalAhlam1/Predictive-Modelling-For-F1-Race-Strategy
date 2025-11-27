@@ -3,13 +3,13 @@ import pandas as pd
 from sqlalchemy import create_engine, text
 
 # --- CONFIGURATION ---
-# 1. Define the base directory for the database
+# Define the base directory for the database
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# 2. Ensure the directory exists
+# Ensure the directory exists
 os.makedirs(BASE_DIR, exist_ok=True)
 
-# 3. Database file path and URL
+# Database file path and URL
 DB_NAME = "f1_strategy.db"
 DB_PATH = os.path.join(BASE_DIR, DB_NAME)
 DB_URL = f"sqlite:///{DB_PATH}"
@@ -49,6 +49,12 @@ def load_from_db(query):
     except Exception as e:
         print(f"Error loading from DB: {e}")
         return pd.DataFrame()
+    
+def execute_query(query, params=None):
+    """Executes a query that changes data (INSERT, UPDATE, DELETE)."""
+    with engine.connect() as conn:
+        conn.execute(text(query), params)
+        conn.commit()
     
 def test_db_connection():
     """
