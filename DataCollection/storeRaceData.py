@@ -427,7 +427,7 @@ def get_race_replay_data(session_key):
     Fetches data and aligns drivers to the nearest second.
     """
     if not db.test_db_connection():
-        return pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame()
 
     # Fetch Raw Data
     query = f"""
@@ -450,8 +450,20 @@ def get_race_replay_data(session_key):
     if df.empty:
         return df
 
-    # Convert Timestamp to correct format
+    # Convert Timestamp to correct format for graphing
     df['timestamp'] = pd.to_datetime(df['timestamp'], format='ISO8601', errors='coerce')
+    df = df.dropna(subset=['timestamp'])
+
+    # --- Accurate lap times ---
+    # Determine start time of each lap per driver using the original timestamps
+    lap_start_times = df.groupby(['driver_acronym', 'lap_number'])['timestamp'].min().reset_index()
+    lap_start_times.rename(columns={'timestamp': 'lap_start_time'}, inplace=True)
+    laps_sorted = lap_start_times.sort_values(['driver_acronym', 'lap_number'])
+    # Lap time = start time of next lap - start time of this lap
+    laps_sorted['lap_time'] = laps_sorted.groupby('driver_acronym')['lap_start_time'].diff().shift(-1)
+    # Convert to seconds and drop rows that have NaT (last lap) so we don't have incomplete lap times
+    laps_sorted['lap_time'] = laps_sorted['lap_time'].dt.total_seconds()
+    lap_times_df = laps_sorted.dropna(subset=['lap_time'])[['driver_acronym', 'lap_number', 'lap_time']]
 
     # Round timestamps to the nearest second for better track drawing sync
     # This forces NOR with ..32.722 and VER with ..32.850 both into "17:04:33" which is close enough for visual purposes
@@ -478,7 +490,7 @@ def get_race_replay_data(session_key):
     df_resampled['lap_number'] = df_resampled['lap_number'].astype(int)
     df_resampled['driver_number'] = df_resampled['driver_number'].astype(int)
 
-    return df_resampled
+    return df_resampled, lap_times_df
 
 # ---------------------------
 # Get driver details

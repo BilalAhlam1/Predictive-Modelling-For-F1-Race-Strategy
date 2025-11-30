@@ -38,7 +38,7 @@ if "data_loaded" not in st.session_state:
         fetched = raceData.update_last_five_sessions()
     
     if not fetched:
-        st.error("Failed to load recent races. Please check connection.")
+        st.error("Failed to load races. There may be a live race in progress. Please try again later.") #API limitation issue
         st.stop()
     else:
         st.session_state["data_loaded"] = True

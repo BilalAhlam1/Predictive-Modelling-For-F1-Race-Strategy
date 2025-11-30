@@ -7,6 +7,18 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'DataCollection')))
 import storeRaceData as raceData
 
+# --- REFRESH CACHE --- #
+# Clear Streamlit caches once when the Dashboard page is first opened.
+# This forces fresh data for the whole app on first visit to this page, and maintains performance afterwards (when revisiting).
+try:
+    st.cache_data.clear()        # clear @st.cache_data decorated results
+except Exception:
+    pass
+try:
+    st.cache_resource.clear()    # clear @st.cache_resource decorated results
+except Exception:
+    pass
+
 # --- CSS FOR CARDS --- #
 st.markdown("""
     <style>

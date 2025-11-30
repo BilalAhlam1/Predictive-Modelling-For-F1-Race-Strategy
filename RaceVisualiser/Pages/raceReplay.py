@@ -9,7 +9,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '.
 import storeRaceData as raceData
 
 # --- RACE REPLAY SECTION ---
-st.header("Race Replay & Telemetry")
+st.header(f"Race Replay & Telemetry For **{st.session_state['selected_race_name']}**")
 
 if 'selected_session_key' not in st.session_state:
     st.warning("No race selected.")
@@ -50,18 +50,41 @@ def get_replay_data(key):
     """
     Fetches and processes race replay data for visualization.
     """
-    df = raceData.get_race_replay_data(key)
-    if df.empty: return df
+    # get_race_replay_data now returns (resampled_telemetry_df, lap_times_df)
+    resampled, lap_times = raceData.get_race_replay_data(key)
+    if resampled is None or (hasattr(resampled, 'empty') and resampled.empty):
+        return pd.DataFrame(), pd.DataFrame()
     
     #-----------------DRIVER COLORS------------------#
+    df = resampled
     df_colors = raceData.get_driver_colors(key)
     if not df_colors.empty:
         df = pd.merge(df, df_colors, on='driver_acronym', how='left')
         # Fill any individual drivers that missed a color mapping
         df['team_colour'] = df['team_colour'].fillna('#FF1508')
+        
+        # Merge colours into lap times as well so the line graph can use them
+        lap_times = pd.merge(lap_times, df_colors[['driver_acronym','team_colour']], on='driver_acronym', how='left')
+        lap_times['team_colour'] = lap_times['team_colour'].fillna('#FF1508')
     else:
         # Fallback if API completely failed
         df['team_colour'] = '#FF1508'
+        lap_times['team_colour'] = '#FF1508'
+    # Format lap times as mm:ss.mmm for display in hovertemplates for easier reading
+    def _fmt_time_seconds(val):
+        try:
+            t = float(val)
+        except Exception:
+            return ''
+        mins = int(t // 60)
+        secs = int(t % 60)
+        millis = int(round((t - int(t)) * 1000))
+        return f"{mins}:{secs:02d}.{millis:03d}"
+
+    if not lap_times.empty:
+        lap_times['lap_time_fmt'] = lap_times['lap_time'].apply(_fmt_time_seconds)
+    else:
+        lap_times['lap_time_fmt'] = []
         
         
     #-----------------TIME SETUP------------------#
@@ -112,7 +135,8 @@ def get_replay_data(key):
     unified_df = pd.concat(aligned_dfs)
     unified_df['lap_number'] = unified_df['lap_number'].fillna(0).astype(int) # Fill missing laps as 0
     
-    return unified_df
+    return unified_df, lap_times
+
 
 #-----------------LEADERBOARD------------------#
 def get_leaderboard_for_frame(frame_data):
@@ -146,176 +170,193 @@ def play_race_replay(session_key):
     
     # Load Data
     with st.spinner(f"Optimizing {race_name} Data"):
-        df = get_replay_data(session_key)
+        df, lap_times_df = get_replay_data(session_key)
         track_df = get_static_track(session_key)
 
         if df.empty or track_df is None:
             st.error("Data unavailable.")
             return
+        try:
+            if (not lap_times_df.empty) and (lap_times_df['team_colour'].nunique() == 1) and (lap_times_df['team_colour'].iloc[0] == '#FF1508'):
+                st.warning("Driver colours unavailable (using defaults). OpenF1 API may be down; using DB fallback.") # API limitation issue, will fallback to default colors
+        except Exception:
+            # if lap_times_df doesn't have team_colour, skip warning
+            pass
         
         # Mark as loaded for session loading position and avoid reloading
         st.session_state["replay_loaded"] = True
-        
-        #-----------------ANIMATION SETUP------------------#
-        # Setting up the Figure
-        fig = make_subplots(
-            rows=1, cols=2,
-            column_widths=[0.90, 0.40], 
-            specs=[[{"type": "xy"}, {"type": "table"}]],
-            horizontal_spacing=0.02
-        )
 
-        # Define Axis Ranges
-        padding = 400
-        x_min, x_max = track_df['x'].min() - padding, track_df['x'].max() + padding
-        y_min, y_max = track_df['y'].min() - padding, track_df['y'].max() + padding
-
-        # Generate Frames
-        # We use every single timestamp for smoothness
-        animation_timestamps = df['race_time'].unique()
-        
-        frames = []
-        for t in animation_timestamps:
-            frame_data = df[df['race_time'] == t]
-            lb_data = get_leaderboard_for_frame(frame_data)
-            curr_lap = int(frame_data['lap_number'].max()) if not frame_data.empty else 0
-
-            frames.append(go.Frame(
-                data=[
-                    # Trace Drivers
-                    go.Scatter(
-                        x=frame_data['x'] + 5, y=frame_data['y'],
-                        ids=frame_data['driver_acronym'],
-                        mode='markers+text',
-                        text=frame_data['driver_acronym'],
-                        textposition="top center",
-                        cliponaxis=False, # Prevent text cutoff at edges
-                        textfont=dict(size=11, color="white", weight="bold"),
-                        marker=dict(color=frame_data['team_colour'], size=11, line=dict(width=1, color='white'))
-                    ),
-                    # Trace Table - include Team column with colour-coded text
-                    go.Table(
-                        header=dict(values=["Pos", "Driver", "Team", "Lap"], 
-                                    fill_color='#111', 
-                                    font=dict(color='white', size=13),
-                                    height=20),
-                        cells=dict(
-                            values=[lb_data.Pos, lb_data.Driver, lb_data.Team, lb_data.Lap],
-                            # background color for all cells
-                            fill_color=[
-                                ['#1e1e1e'] * len(lb_data),
-                                ['#1e1e1e'] * len(lb_data),
-                                ['#1e1e1e'] * len(lb_data),
-                                ['#1e1e1e'] * len(lb_data)
-                            ],
-                            # colour the Team text using team_colour per-row, fallback to white
-                            font=dict(
-                                color=[
-                                    ['white'] * len(lb_data),
-                                    ['white'] * len(lb_data),
-                                    lb_data['team_colour'].tolist() if 'team_colour' in lb_data.columns else ['white'] * len(lb_data),
-                                    ['white'] * len(lb_data)
-                                ],
-                                size=13
-                            ), 
-                            height=20
-                        )
-                    )
-                ],
-                layout=go.Layout(title_text=f"Current Lap: {curr_lap}"),
-                name=str(t),
-                traces=[1, 2] # Table is trace 2 (index 1), Drivers is trace 1 (index 0)
-            ))
-
-        #-----------------INITIAL TRACING------------------#
-        # Initial Frame Setup
-        start_t = animation_timestamps[0]
-        start_data = df[df['race_time'] == start_t]
-        start_lb = get_leaderboard_for_frame(start_data)
-
-        # Trace Background Track
-        fig.add_trace(go.Scatter(
-            x=track_df['x'], y=track_df['y'],
-            mode='lines', line=dict(color='#444', width=5), hoverinfo='skip'
-        ), row=1, col=1)
-
-        # Trace Drivers
-        fig.add_trace(go.Scatter(
-            x=start_data['x'], y=start_data['y'],
-            mode='markers+text', text=start_data['driver_acronym'],
-            textposition="top center",
-            cliponaxis=False,
-            textfont=dict(size=11, color="white", weight="bold"),
-            marker=dict(color=start_data['team_colour'], size=10, line=dict(width=1, color='white'))
-        ), row=1, col=1)
-
-        # Trace Leaderboard Table
-        fig.add_trace(go.Table(
-            header=dict(values=["Pos", "Driver", "Team", "Lap"], fill_color='#111', font=dict(color='white')),
-            cells=dict(
-                values=[start_lb.Pos, start_lb.Driver, start_lb.Team, start_lb.Lap],
-                # background color for all cells
-                fill_color=[
-                    ['#1e1e1e'] * len(start_lb),
-                    ['#1e1e1e'] * len(start_lb),
-                    ['#1e1e1e'] * len(start_lb),
-                    ['#1e1e1e'] * len(start_lb)
-                ],
-                # colour the Team text using team_colour per-row, fallback to white
-                font=dict(color=[
-                    ['white'] * len(start_lb),
-                    ['white'] * len(start_lb),
-                    start_lb['team_colour'].tolist() if 'team_colour' in start_lb.columns else ['white'] * len(start_lb),
-                    ['white'] * len(start_lb)
-                ])
+        # Build or reuse the heavy animated main figure
+        main_fig_key = f"main_fig_{session_key}"
+        if main_fig_key in st.session_state:
+            main_fig = st.session_state[main_fig_key]
+        else:
+            #-----------------MAIN FIG SETUP (cached)------------------#
+            main_fig = make_subplots(
+                rows=1, cols=2,
+                column_widths=[0.8, 0.2],
+                specs=[[{"type": "xy"}, {"type": "table"}]],
+                horizontal_spacing=0.02,
             )
-        ), row=1, col=2)
 
-        # Final Layout
-        fig.update_layout(
-            height=650,
-            plot_bgcolor='rgba(0,0,0,0)',
-            paper_bgcolor='rgba(0,0,0,0)',
-            title=f"Race Start",
-            xaxis=dict(range=[x_min, x_max], visible=False, fixedrange=True),
-            yaxis=dict(range=[y_min, y_max], visible=False, fixedrange=True, scaleanchor="x", scaleratio=1),
-            showlegend=False,
+            # Define Axis Ranges for main map
+            padding = 400
+            x_min, x_max = track_df['x'].min() - padding, track_df['x'].max() + padding
+            y_min, y_max = track_df['y'].min() - padding, track_df['y'].max() + padding
 
-            updatemenus=[dict(
-                type="buttons",
-                showactive=True,
-                x=0.05, y=-0.1,
-                xanchor="left", yanchor="top",
-                direction="left",
-                buttons=[
-                    dict(label="▶ Play",
-                        method="animate",
-                        args=[None, dict(
-                            # Speed Optimization:
-                            # 50ms per frame. 
-                            # Since data is 1.0s interval, this will be 20x Real Time Speed.
-                            # To be adjusted based on preference by user via multiplier later.
-                            frame=dict(duration=80, redraw=True), 
-                            transition=dict(duration=80, easing="linear"),
-                            fromcurrent=True
-                        )]),
-                    dict(label="⏸ Pause",
-                        method="animate",
-                        args=[[None], dict(frame=dict(duration=0, redraw=False), mode="immediate")])
-                ],
-                bgcolor="white",
-                bordercolor="#444",
-                borderwidth=1,
-                pad={"r": 10, "t": 10},
-                font=dict(color="black")
-            )],
-            sliders=[] # No slider for now
+            # Generate Frames for animation (drivers + leaderboard)
+            animation_timestamps = df['race_time'].unique()
+            frames = []
+            for t in animation_timestamps:
+                frame_data = df[df['race_time'] == t]
+                lb_data = get_leaderboard_for_frame(frame_data)
+                curr_lap = int(frame_data['lap_number'].max()) if not frame_data.empty else 0
+
+                frames.append(go.Frame(
+                    data=[
+                                go.Scatter(
+                                    x=frame_data['x'] + 5, y=frame_data['y'],
+                                    ids=frame_data['driver_acronym'],
+                                    mode='markers+text',
+                                    text=frame_data['driver_acronym'],
+                                    textposition="top center",
+                                    cliponaxis=False,
+                                    textfont=dict(size=13, color="white", weight="bold"),
+                                    marker=dict(color=frame_data['team_colour'], size=16, line=dict(width=1, color='white'))
+                                ),
+                        go.Table(
+                            header=dict(values=["Pos", "Driver", "Team", "Lap"], fill_color='#111', font=dict(color='white', size=16), height=30),
+                            cells=dict(
+                                values=[lb_data.Pos, lb_data.Driver, lb_data.Team, lb_data.Lap],
+                                fill_color=[['#1e1e1e'] * len(lb_data)] * 4,
+                                font=dict(
+                                    color=[
+                                        ['white'] * len(lb_data),
+                                        ['white'] * len(lb_data),
+                                        lb_data['team_colour'].tolist() if 'team_colour' in lb_data.columns else ['white'] * len(lb_data),
+                                        ['white'] * len(lb_data)
+                                    ],
+                                    size=14
+                                ),
+                                height=28
+                            )
+                        )
+                    ],
+                    layout=go.Layout(title_text=f"Current Lap: {curr_lap}"),
+                    name=str(t),
+                    traces=[1, 2]
+                ))
+
+            # Initial traces track, drivers, table
+            start_t = animation_timestamps[0]
+            start_data = df[df['race_time'] == start_t]
+            start_lb = get_leaderboard_for_frame(start_data)
+
+            main_fig.add_trace(go.Scatter(x=track_df['x'], y=track_df['y'], mode='lines', line=dict(color='#444', width=8), hoverinfo='skip'), row=1, col=1)
+
+            main_fig.add_trace(go.Scatter(
+                x=start_data['x'], y=start_data['y'], mode='markers+text', text=start_data['driver_acronym'],
+                textposition='top center', cliponaxis=False, textfont=dict(size=13, color='white', weight='bold'),
+                marker=dict(color=start_data['team_colour'], size=14, line=dict(width=1, color='white'))
+            ), row=1, col=1)
+
+            main_fig.add_trace(go.Table(
+                header=dict(values=["Pos", "Driver", "Team", "Lap"], fill_color='#111', font=dict(color='white', size=16), height=30),
+                cells=dict(values=[start_lb.Pos, start_lb.Driver, start_lb.Team, start_lb.Lap],
+                           fill_color=[['#1e1e1e'] * len(start_lb)] * 4,
+                           font=dict(color=[['white'] * len(start_lb), ['white'] * len(start_lb), start_lb['team_colour'].tolist() if 'team_colour' in start_lb.columns else ['white'] * len(start_lb), ['white'] * len(start_lb)], size=14),
+                           height=28)
+            ), row=1, col=2)
+
+            main_fig.frames = frames
+
+            # play / pause buttons
+            main_fig.update_layout(
+                height=900,
+                plot_bgcolor='rgba(0,0,0,0)',
+                paper_bgcolor='rgba(0,0,0,0)',
+                title=f"Race Start",
+                xaxis=dict(range=[x_min, x_max], visible=False, fixedrange=True),
+                yaxis=dict(range=[y_min, y_max], visible=False, fixedrange=True, scaleanchor="x", scaleratio=1),
+                showlegend=False,
+                updatemenus=[dict(
+                    type="buttons",
+                    showactive=True,
+                    x=0.05, y=-0.1,
+                    xanchor="left", yanchor="top",
+                    direction="left",
+                    buttons=[
+                        dict(label="▶ Play",
+                            method="animate",
+                            args=[None, dict(frame=dict(duration=80, redraw=True), transition=dict(duration=80, easing="linear"), fromcurrent=True)]),
+                        dict(label="⏸ Pause",
+                            method="animate",
+                            args=[[None], dict(frame=dict(duration=0, redraw=False), mode="immediate")])
+                    ],
+                    bgcolor="white",
+                    bordercolor="#444",
+                    borderwidth=1,
+                    pad={"r": 10, "t": 10},
+                    font=dict(color="black")
+                )],
+                sliders=[]
+            )
+
+            # Cache main_fig in session_state so dropdowns don't rebuild it
+            st.session_state[main_fig_key] = main_fig
+
+        # Render main figure (track + leaderboard + play/pause buttons)
+        st.plotly_chart(st.session_state[main_fig_key], use_container_width=True, config={"displayModeBar": False})
+
+        # ----------------- LAP-TIME/PIT INFO GRAPH -----------------
+        left_col, right_col = st.columns([0.5, 0.5]) # Split for lap time graph and pit info (pit info to be added later)
+
+        # Driver selector key
+        sel_key = f"lap_driver_{session_key}"
+        drivers_list = []
+        if not lap_times_df.empty:
+            drivers_list = sorted(lap_times_df['driver_acronym'].unique())
+
+        # Read selected driver from session_state
+        selected_driver = st.session_state.get(sel_key, "All")
+
+        # Build lap figure
+        lap_fig = go.Figure()
+        if not lap_times_df.empty:
+            if selected_driver == "All": # Show all drivers
+                for drv in drivers_list:
+                    drv_df = lap_times_df[lap_times_df['driver_acronym'] == drv]
+                    if drv_df.empty:
+                        continue
+                    lap_fig.add_trace(go.Scatter(
+                        x=drv_df['lap_number'], y=drv_df['lap_time'], mode='lines+markers', name=drv,
+                        line=dict(color=drv_df['team_colour'].iloc[0], width=2), marker=dict(size=6),
+                        text=drv_df['lap_time_fmt'],
+                        hovertemplate=f"<span style='font-size:14px'><b>{drv}: %{{text}}</b></span><br>Lap: %{{x}}<extra></extra>",
+                        hoverlabel=dict(font=dict(size=14))
+                    ))
+            else: # Show selected driver only
+                drv_df = lap_times_df[lap_times_df['driver_acronym'] == selected_driver]
+                if not drv_df.empty:
+                    lap_fig.add_trace(go.Scatter(
+                        x=drv_df['lap_number'], y=drv_df['lap_time'], mode='lines+markers', name=selected_driver,
+                        line=dict(color=drv_df['team_colour'].iloc[0], width=2), marker=dict(size=6),
+                        text=drv_df['lap_time_fmt'],
+                        hovertemplate=f"<span style='font-size:14px'><b>{selected_driver}: %{{text}}</b></span><br>Lap: %{{x}}<extra></extra>",
+                        hoverlabel=dict(font=dict(size=14))
+                    ))
+
+        lap_fig.update_layout(
+            xaxis_title='Lap Number', yaxis_title='Lap Time (s)', height=300,
+            plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)'
         )
-        
-    #-----------------LAUNCH ANIMATION------------------#
-    fig.frames = frames
-    # Hide the Plotly modebar to remove selection and export tools
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+        # Render lap figure in left column, then place the selectbox below it
+        with left_col:
+            st.plotly_chart(lap_fig, use_container_width=True, config={"displayModeBar": False})
+            # This selectbox will update st.session_state[sel_key] and cause a rerun 
+            # main_fig is cached in session_state so it won't rebuild keeping the race running
+            st.selectbox("Driver (lap time graph)", options=["All"] + drivers_list, index=0 if selected_driver == "All" else (drivers_list.index(selected_driver) + 1), key=sel_key)
 
 # Start the Replay
 play_race_replay(session_key)
