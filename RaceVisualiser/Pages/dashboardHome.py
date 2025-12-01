@@ -82,7 +82,7 @@ if session_df.empty:
     st.error("No race data available.")
 else:
     session_df['date_start'] = pd.to_datetime(session_df['date_start'])
-    st.subheader(f"{time.localtime().tm_year} Race Calendar")
+    st.subheader(str(raceData.get_season_year()) + " Race Calendar") # Dynamic year title
     session_df = session_df.sort_values(by='date_start', ascending=False) # Most recent first
     cols_per_row = 3
     rows = [session_df.iloc[i:i + cols_per_row] for i in range(0, len(session_df), cols_per_row)]

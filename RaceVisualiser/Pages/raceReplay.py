@@ -7,6 +7,7 @@ import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'DataCollection')))
 import storeRaceData as raceData
+import storeMLData as mlData
 
 # --- RACE REPLAY SECTION ---
 st.header(f"Race Replay & Telemetry For **{st.session_state['selected_race_name']}**")
@@ -194,7 +195,7 @@ def play_race_replay(session_key):
             #-----------------MAIN FIG SETUP (cached)------------------#
             main_fig = make_subplots(
                 rows=1, cols=2,
-                column_widths=[0.8, 0.2],
+                column_widths=[0.7, 0.4],
                 specs=[[{"type": "xy"}, {"type": "table"}]],
                 horizontal_spacing=0.02,
             )
@@ -311,7 +312,8 @@ def play_race_replay(session_key):
         # ----------------- LAP-TIME/PIT INFO GRAPH -----------------
         left_col, right_col = st.columns([0.5, 0.5]) # Split for lap time graph and pit info (pit info to be added later)
 
-        # Driver selector key
+        # --------------- LINE GRAPH (LEFT SIDE) ---------------
+        # Driver selector key for dropdown
         sel_key = f"lap_driver_{session_key}"
         drivers_list = []
         if not lap_times_df.empty:
@@ -347,7 +349,7 @@ def play_race_replay(session_key):
                     ))
 
         lap_fig.update_layout(
-            xaxis_title='Lap Number', yaxis_title='Lap Time (s)', height=300,
+            xaxis_title='Lap Number', yaxis_title='Lap Time (s)', height=500,
             plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)'
         )
 
@@ -357,6 +359,27 @@ def play_race_replay(session_key):
             # This selectbox will update st.session_state[sel_key] and cause a rerun 
             # main_fig is cached in session_state so it won't rebuild keeping the race running
             st.selectbox("Driver (lap time graph)", options=["All"] + drivers_list, index=0 if selected_driver == "All" else (drivers_list.index(selected_driver) + 1), key=sel_key)
+            
+        # --------------- PIT INFO (RIGHT SIDE) ---------------
+        
+        with st.spinner("Loading Pit Stop Data..."):
+            #Update last five sessions to get pit stop data
+            fetch_data = mlData.update_last_five_sessions()
+            if fetch_data:
+                st.success("Pit stop data loaded successfully.")
+            else:
+                st.warning("Pit stop data unavailable; using API fallback.")
+            
+            #Fetch pit stop data for session
+            pit_data = mlData.fetchMLData(session_key)
+            if pit_data.empty:
+                st.info("No pit stop data available for this race.")
+            else:
+                st.dataframe(pit_data)
+            
+            
+        
+        
 
 # Start the Replay
 play_race_replay(session_key)

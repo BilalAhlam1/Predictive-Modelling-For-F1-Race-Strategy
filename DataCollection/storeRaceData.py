@@ -3,7 +3,8 @@ import os
 import time
 import aiohttp
 import pandas as pd
-from datetime import datetime, timedelta
+import datetime
+from datetime import timedelta
 import random
 import math
 import openf1_helper as of1
@@ -274,6 +275,19 @@ def check_and_update_DB(session_key):
         return False
 
 # ---------------------------
+# get season year
+# ---------------------------
+def get_season_year(today=None, season_start_month=3):
+    """
+    Return the season year to query.
+    If the current month is before the season_start_month, return previous year.
+    Default assumes season starts in March so Jan/Feb use previous year.
+    """
+    if today is None:
+        today = datetime.datetime.now(datetime.timezone.utc)
+    return today.year if today.month >= season_start_month else today.year - 1
+
+# ---------------------------
 # Update last five sessions and store if not present
 # ---------------------------
 def update_last_five_sessions():
@@ -283,7 +297,7 @@ def update_last_five_sessions():
     """
     try:
         sessions_df = api.get_dataframe('sessions', {
-            'year': time.localtime().tm_year,
+            'year': get_season_year(), # current year based on season
             'session_type': 'Race'
         })
     except Exception as e:
