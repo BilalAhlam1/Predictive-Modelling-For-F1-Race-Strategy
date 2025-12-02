@@ -52,7 +52,7 @@ async def get_drivers():
     """Get list of drivers for the session as (acronym, number) tuples."""
     df = api.get_dataframe('drivers', {'session_key': SESSION_KEY})
     if df.empty:
-        print("No drivers found for this session.")
+        #print("No drivers found for this session.")
         return []
     return [(row['name_acronym'], row['driver_number']) for _, row in df.iterrows()]
 

@@ -350,11 +350,50 @@ def play_race_replay(session_key):
 
         lap_fig.update_layout(
             xaxis_title='Lap Number', yaxis_title='Lap Time (s)', height=500,
-            plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)'
+            plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+            legend=dict(
+                orientation='v',
+                y=1.02,
+                yanchor='bottom',
+                x=0.5,
+                xanchor='center',
+                traceorder='normal',
+                font=dict(size=12)
+            ),
+            showlegend=False,
+            margin=dict(t=5)
         )
 
         # Render lap figure in left column, then place the selectbox below it
         with left_col:
+            # Build a custom vertical legend above the plot to ensure entries are stacked vertically
+            # Title for the lap-time graph placed above the legend
+            title_text = "Lap Times (All Drivers)" if selected_driver == "All" else f"Lap Times — {selected_driver}"
+            st.markdown(f"<div style='text-align:center; font-size:16px; font-weight:600; margin-bottom:4px;'>{title_text}</div>", unsafe_allow_html=True)
+
+            if selected_driver == "All" and drivers_list:
+                # Build legend items as horizontal
+                legend_items = []
+                for drv in drivers_list:
+                    try:
+                        color = lap_times_df[lap_times_df['driver_acronym'] == drv]['team_colour'].iloc[0]
+                    except Exception:
+                        color = '#808080'
+                    item_html = (
+                        f"<div style='display:inline-flex; align-items:center; margin:4px 8px; font-size:12px;'>"
+                        f"<span style='display:inline-block; width:14px; height:14px; background:{color}; border:1px solid #222;'></span>"
+                        f"<span style='margin-left:6px; white-space:nowrap;'>{drv}</span>"
+                        f"</div>"
+                    )
+                    legend_items.append(item_html)
+
+                legend_html = "".join(legend_items)
+                # Use flex container to lay items out horizontally and wrap to next line when needed
+                st.markdown(
+                    f"<div style='display:flex; flex-wrap:wrap; justify-content:center; gap:4px; max-width:100%; padding:2px 0;'>{legend_html}</div>",
+                    unsafe_allow_html=True
+                )
+
             st.plotly_chart(lap_fig, use_container_width=True, config={"displayModeBar": False})
             # This selectbox will update st.session_state[sel_key] and cause a rerun 
             # main_fig is cached in session_state so it won't rebuild keeping the race running
@@ -375,11 +414,150 @@ def play_race_replay(session_key):
             if pit_data.empty:
                 st.info("No pit stop data available for this race.")
             else:
-                st.dataframe(pit_data)
-            
-            
-        
-        
+                # ----------------- SHOW PIT STOP INFO -----------------
+                # Define compound colors
+                compound_colors = {
+                    'SOFT': '#ff0000',
+                    'MEDIUM': '#ffff00',
+                    'HARD': '#ffffff',
+                    'INTERMEDIATE': '#00ff00',
+                    'WET': '#0099ff'
+                }
+
+                # Map driver_number from ML data to driver_acronym using telemetry driver mapping for y-axis
+                try:
+                    # telemetry contains `driver_number` from MLData and `driver_acronym` from RaceData which are combined as a map
+                    if 'driver_number' in df.columns and 'driver_acronym' in df.columns:
+                        driver_map = df[['driver_number', 'driver_acronym']].drop_duplicates()
+                        # Ensure types align
+                        pit_data['driver_number'] = pit_data['driver_number'].astype(driver_map['driver_number'].dtype)
+                        pit_data = pit_data.merge(driver_map, on='driver_number', how='left')
+                    else:
+                        pit_data['driver_acronym'] = pit_data['driver_number'].astype(str)
+                except Exception:
+                    # use driver_number as string if mapping fails
+                    pit_data['driver_acronym'] = pit_data['driver_number'].astype(str)
+
+                # Build stints by merging contiguous laps with the same compound per driver
+                pit_fig = go.Figure()
+
+                # Normalize column names
+                lap_col = 'lap_number' if 'lap_number' in pit_data.columns else ('lap' if 'lap' in pit_data.columns else ('pit_lap' if 'pit_lap' in pit_data.columns else None))
+                compound_col = 'tire_compound' if 'tire_compound' in pit_data.columns else ('compound' if 'compound' in pit_data.columns else None)
+                laps_on_tire_col = 'laps_on_tire' if 'laps_on_tire' in pit_data.columns else None
+
+                # Build max lap per driver from lap_times_df to clip stints to race end
+                max_lap_map = {}
+                try:
+                    if not lap_times_df.empty:
+                        max_lap_series = lap_times_df.groupby('driver_acronym')['lap_number'].max() # Get max lap per driver
+                        max_lap_map = max_lap_series.to_dict() # Convert to dict for easy lookup
+                except Exception:
+                    max_lap_map = {} # Fallback to empty if any issue
+
+                y_order = pit_data['driver_acronym'].dropna().unique().tolist() # Preserve order of appearance
+
+                # Build stints list
+                stints = []
+                for drv in y_order:
+                    ddf = pit_data[pit_data['driver_acronym'] == drv].copy()
+                    # If data contains a 'laps_on_tire' and a lap start, use that directly
+                    if laps_on_tire_col and lap_col in ddf.columns:
+                        ddf = ddf.sort_values(lap_col)
+                        # For each row, build stint from lap and laps_on_tire
+                        for _, r in ddf.iterrows():
+                            start = int(r[lap_col])
+                            length = int(r[laps_on_tire_col]) if pd.notna(r[laps_on_tire_col]) else 1
+                            end = start + length - 1
+                            stints.append({'driver': drv, 'start': start, 'end': end, 'compound': (str(r[compound_col]).upper() if compound_col in r and pd.notna(r[compound_col]) else '')})
+                    else:
+                        # Otherwise assume one row per lap with compound, merge contiguous runs
+                        if lap_col not in ddf.columns or compound_col not in ddf.columns:
+                            continue
+                        ddf = ddf.sort_values(lap_col)
+                        current_comp = None
+                        current_start = None
+                        prev_lap = None # Keep track of the previous lap
+                        # Iterate through laps to build stints based on compound changes
+                        for _, r in ddf.iterrows():
+                            lap = int(r[lap_col])
+                            comp = str(r[compound_col]).upper() if pd.notna(r[compound_col]) else ''
+                            if current_comp is None:
+                                current_comp = comp
+                                current_start = lap
+                            elif comp != current_comp: # Compound changed, end current stint
+                                # Use the previously stored lap number for the end of the stint
+                                stints.append({'driver': drv, 'start': current_start, 'end': prev_lap, 'compound': current_comp})
+                                current_comp = comp
+                                current_start = lap
+                            prev_lap = lap # Update previous lap at the end of each iteration
+                        if current_comp is not None:
+                            stints.append({'driver': drv, 'start': current_start, 'end': ddf[lap_col].max(), 'compound': current_comp})
+
+                # Add traces for each stint to the figure
+                for s in stints:
+                    drv = s.get('driver')
+                    start = s.get('start')
+                    end = s.get('end')
+                    compound = (s.get('compound') or '').upper()
+
+                    if start is None or end is None or drv is None:
+                        continue
+
+                    # Clip stint to driver's max lap if available to get stint end within race
+                    # Reason: sometimes pit data may extend beyond race end due to data issues. Fixes overlapping stints.
+                    max_l = max_lap_map.get(drv, end)
+                    display_end = min(end, max_l)
+                    
+                    # Skip stints that end before they start (data issues)
+                    if display_end < start:
+                        continue
+
+                    color = compound_colors.get(compound, '#808080') # Default grey if unknown
+                    
+                    # Add the main stint trace on top
+                    pit_fig.add_trace(go.Scatter(
+                        x=[start, display_end], # Laps on x-axis
+                        y=[drv, drv], # Driver on y-axis
+                        mode='lines',
+                        line=dict(color=color, width=15),
+                        name=compound,
+                        showlegend=False,
+                        hovertemplate=(f"Driver: {drv}<br>"
+                                       f"Compound: {compound}<br>"
+                                       f"Laps: {start}-{end}<br>"
+                                       f"Stint Length: {end - start + 1}<extra></extra>")
+                    ))
+                  
+                    
+                # Add legend entries to explain colors
+                for compound, color in compound_colors.items():
+                    pit_fig.add_trace(go.Scatter(
+                        x=[None], y=[None],
+                        mode='markers',
+                        marker=dict(size=10, color=color),
+                        name=compound
+                    ))
+
+                # Set chart height based on number of drivers
+                chart_height = max(600, len(y_order) * 30)
+
+                # Final layout adjustments
+                pit_fig.update_layout(
+                    title=dict(text='Stints / Pit Tyres', x=0.5, xanchor='center'),
+                    xaxis_title='Lap Number',
+                    yaxis_title='Driver',
+                    yaxis=dict(categoryorder='array', categoryarray=y_order[::-1]), # Show drivers top to bottom
+                    height=chart_height,
+                    template='plotly_dark',
+                    showlegend=True
+                )
+                # Render pit figure in right column
+                with right_col:
+                    st.plotly_chart(pit_fig, use_container_width=True, config={"displayModeBar": False})
+                    #cols_to_show = ['driver_number', 'driver_acronym'] + [c for c in pit_data.columns if c not in ['driver_number','driver_acronym']]
+                    #st.dataframe(pit_data[cols_to_show].head(200))
+                
 
 # Start the Replay
 play_race_replay(session_key)

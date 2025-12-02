@@ -49,7 +49,7 @@ async def get_laps(driver_number):
 async def process_driver(driver_tuple, semaphore):
     """Fetch all laps for one driver with basic retry logic."""
     acronym, driver_number = driver_tuple
-    print(f"Processing driver {acronym} ({driver_number})")
+    #print(f"Processing driver {acronym} ({driver_number})")
 
     # retry logic incase of transient failures
     for attempt in range(3):
@@ -101,7 +101,7 @@ async def fetchWithAPI(session_key):
     # Fetch Stints
     try:
         df_stints = api.get_dataframe('stints', {'session_key': session_key})
-        print(f"Fetched {len(df_stints)} stints.")
+        #print(f"Fetched {len(df_stints)} stints.")
     except Exception as e:
         print(f"Error fetching stints: {e}")
         df_stints = pd.DataFrame()
@@ -196,7 +196,7 @@ def fetchMLData(session_key):
         df = asyncio.run(fetchWithAPI(session_key))
         db.save_to_db(df, 'ml_training_data', if_exists='append')
     else:
-        print(f"Session {session_key} found in database.")
+        #print(f"Session {session_key} found in database.")
         df = db.load_from_db(f"""SELECT * FROM ml_training_data WHERE session_key = {session_key}""")
 
     return df
@@ -204,14 +204,14 @@ def fetchMLData(session_key):
 
 def updateMLData(session_key):
     if db.test_db_connection():
-        print("Database connection successful.")
+        #print("Database connection successful.")
         df = fetchMLData(session_key)
-        print(f"Data ready with {len(df)} rows for session {session_key}.")
+        #print(f"Data ready with {len(df)} rows for session {session_key}.")
         return True
     else: 
         print("Database connection failed. Falling back to API fetch.")
         df = asyncio.run(fetchWithAPI(session_key))
-        print(f"Data ready with {len(df)} rows for session {session_key}.")
+        #print(f"Data ready with {len(df)} rows for session {session_key}.")
         return False
 # ---------------------------
 # get season year (adjust month if needed)
@@ -259,8 +259,7 @@ def update_last_five_sessions():
             all_success = False
             print(f"Issue processing session {session['session_key']}")
 
-    #remove all sessions not in recent five from the database
-    # UPDATE: Handle edge cases for NOT IN clause with fewer than 5 sessions
+    # Handle edge cases for NOT IN clause with fewer than 5 sessions
     recent_keys = sessions_df['session_key'].tail(5).tolist()
     try:
         if len(recent_keys) == 0:
