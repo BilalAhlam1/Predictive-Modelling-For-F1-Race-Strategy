@@ -503,7 +503,7 @@ def get_race_replay_data(session_key):
     # Ensure integers for clean display
     df_resampled['lap_number'] = df_resampled['lap_number'].astype(int)
     df_resampled['driver_number'] = df_resampled['driver_number'].astype(int)
-
+    #print(lap_times_df)
     return df_resampled, lap_times_df
 
 # ---------------------------
@@ -548,7 +548,25 @@ def get_driver_colors(session_key):
         print(f"API Error (Using default colors): {e}")
         return pd.DataFrame(columns=['driver_acronym', 'team_colour'])
 
+# ---------------------------
+# Race control data (safety car, VSC)
+# ---------------------------
+def get_safety_car_data(session_key):
+    """
+    Fetches safety car and VSC deployment data for the session.
+    """
+    df = api.get_dataframe('race_control', {'session_key': session_key})
+    if df.empty:
+        return pd.DataFrame()
+    print(f"Fetched {len(df)} race control events(safety car, VSC).")
+    #print(df[['flag', 'message', 'lap_number']])
+    return df
+    
+
+
+
 if __name__ == "__main__":
     # For testing purposes
     #print(get_race_replay_data(9858))
+    #print(get_safety_car_data(9850))
     pass

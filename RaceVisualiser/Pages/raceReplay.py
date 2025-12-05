@@ -39,7 +39,7 @@ if "replay_loaded" not in st.session_state:
         """,
         unsafe_allow_html=True
     )
-    
+
 #-----------------TRACK LAYOUT------------------#
 @st.cache_data
 def get_static_track(key):
@@ -56,8 +56,77 @@ def get_replay_data(key):
     if resampled is None or (hasattr(resampled, 'empty') and resampled.empty):
         return pd.DataFrame(), pd.DataFrame()
     
+    #-----------------STINT DATA FOR COMPOUND------------------#
+    pit_data = mlData.fetchMLData(key)
+    stints = [] # List to hold stint information: driver, start lap, end lap, compound
+    if not pit_data.empty:
+        # Map driver numbers to acronyms
+        if 'driver_number' in resampled.columns and 'driver_acronym' in resampled.columns:
+            driver_map = resampled[['driver_number', 'driver_acronym']].drop_duplicates()
+            pit_data['driver_number'] = pit_data['driver_number'].astype(driver_map['driver_number'].dtype)
+            pit_data = pit_data.merge(driver_map, on='driver_number', how='left')
+        else:
+            pit_data['driver_acronym'] = pit_data['driver_number'].astype(str) # Fallback if mapping unavailable
+
+        y_order = pit_data['driver_acronym'].dropna().unique().tolist() # Maintain order from pit_data
+        lap_col = 'lap_number'
+        compound_col = 'tire_compound'
+        laps_on_tire_col = 'laps_on_tire'
+
+        # Process each driver's pit stops to determine stints
+        for drv in y_order:
+            ddf = pit_data[pit_data['driver_acronym'] == drv].copy().sort_values(lap_col)
+            if lap_col not in ddf.columns or compound_col not in ddf.columns:
+                continue
+            
+            # Initialize stint tracking variables
+            current_comp = None
+            current_start = None
+            prev_lap = None
+            prev_tire_age = None
+
+            # Iterate through driver's pit data to identify stints
+            #Sample row: lap_number, tire_compound, laps_on_tire
+            for _, r in ddf.iterrows():
+                lap = int(r[lap_col])
+                comp = str(r[compound_col]).upper() if pd.notna(r[compound_col]) else 'UNKNOWN'
+                current_tire_age = int(r[laps_on_tire_col]) if laps_on_tire_col in ddf.columns and pd.notna(r[laps_on_tire_col]) else (999 if prev_tire_age is None else prev_tire_age + 1)
+
+                if current_comp is None: # First stint initialization
+                    current_comp = comp
+                    current_start = lap
+                # Check for stint change conditions: new compound, tire age reset, or lap discontinuity (pit stop)
+                elif (comp != current_comp) or (prev_tire_age is not None and current_tire_age < prev_tire_age) or (prev_lap is not None and lap > prev_lap + 1):
+                    stints.append({'driver': drv, 'start': current_start, 'end': prev_lap, 'compound': current_comp})
+                    current_comp = comp
+                    current_start = lap
+                
+                # Update previous lap and tire age for next iteration
+                prev_lap = lap
+                prev_tire_age = current_tire_age
+            
+            # Append the final stint after loop
+            if current_comp is not None:
+                stints.append({'driver': drv, 'start': current_start, 'end': prev_lap, 'compound': current_comp})
+
+    stint_lap_data = [] # Expanded list of laps with compounds
+    # Expand stints into per-lap entries so we can merge easily
+    for s in stints:
+        if s['start'] is not None and s['end'] is not None:
+            for lap in range(s['start'], s['end'] + 1):
+                stint_lap_data.append({'driver_acronym': s['driver'], 'lap_number': lap, 'compound': s['compound']})
+    
+    stints_df = pd.DataFrame(stint_lap_data)
+
     #-----------------DRIVER COLORS------------------#
     df = resampled
+    if not stints_df.empty:
+        # Merge stint compounds into main dataframe for display
+        df = pd.merge(df, stints_df, on=['driver_acronym', 'lap_number'], how='left')
+        df['compound'] = df['compound'].fillna('Unknown')
+    else:
+        df['compound'] = 'Unknown'
+
     df_colors = raceData.get_driver_colors(key)
     if not df_colors.empty:
         df = pd.merge(df, df_colors, on='driver_acronym', how='left')
@@ -71,7 +140,7 @@ def get_replay_data(key):
         # Fallback if API completely failed
         df['team_colour'] = '#FF1508'
         lap_times['team_colour'] = '#FF1508'
-    # Format lap times as mm:ss.mmm for display in hovertemplates for easier reading
+    # Format lap times as mm:ss.mmm for display
     def _fmt_time_seconds(val):
         try:
             t = float(val)
@@ -135,27 +204,74 @@ def get_replay_data(key):
         
     unified_df = pd.concat(aligned_dfs)
     unified_df['lap_number'] = unified_df['lap_number'].fillna(0).astype(int) # Fill missing laps as 0
-    
+    #print(lap_times[['driver_acronym', 'lap_number', 'lap_time_fmt']])
     return unified_df, lap_times
 
-
+def str_time_to_seconds(time_str):
+    """Converts a time string in 'M:SS.sss' format to total seconds as float. Will be made redundant once stored properly."""
+    try:
+        # Split '1:26.961' into minutes and seconds
+        minutes, seconds = time_str.split(':')
+        return int(minutes) * 60 + float(seconds)
+    except (ValueError, AttributeError):
+        # Handle cases where data might be missing or already a float
+        return 0.0
+    
 #-----------------LEADERBOARD------------------#
-def get_leaderboard_for_frame(frame_data):
+def get_leaderboard_for_frame(frame_data, lap_times_df):
     """Generates leaderboard standings for a given frame based on lap number and lap start time."""
     if frame_data.empty:
         # Keep team columns so callers can rely on them existing
-        return pd.DataFrame(columns=['Pos', 'Driver', 'Team', 'Lap', 'team_colour'])
+        return pd.DataFrame(columns=['Pos', 'Driver', 'Team', 'Lap', 'Compound', 'team_colour', 'compound_colour', 'Gap'])
 
-    # Frame data may have multiple rows per driver (shouldn't normally), so take a single representative
+    # Compound colors
+    compound_colors = {
+        'SOFT': '#ff0000',
+        'MEDIUM': '#ffff00',
+        'HARD': '#ffffff',
+        'INTERMEDIATE': '#00ff00',
+        'WET': '#0099ff',
+        'UNKNOWN': '#808080'
+    }
+
+    # Frame data has multiple entries per driver; get the latest for each driver
     drivers = frame_data.groupby('driver_acronym', as_index=False).first()
-
+   
     # Higher Lap First, Earlier Start Time Second
     standings = drivers.sort_values(by=['lap_number', 'lap_start_time'], ascending=[False, True]).copy()
 
     standings['Pos'] = range(1, len(standings) + 1)  # Assign Positions
 
-    result = standings[['Pos', 'driver_acronym', 'lap_number', 'team_colour']].rename(
-        columns={'driver_acronym': 'Driver', 'lap_number': 'Lap', 'team_colour': 'team_colour'})
+    # Map compound to color
+    standings['compound_colour'] = standings['compound'].map(compound_colors).fillna('#808080')
+    
+    # Distance to position above in laps (calulated from lap numbers and lap times rather than fetch from frame data directly to avoid inconsistencies)
+    if not standings.empty:
+        leader = standings.iloc[0]
+        gaps = []
+        # Formats lap times to seconds for gap calculation
+        lap_times_df['lap_seconds'] = lap_times_df['lap_time_fmt'].apply(str_time_to_seconds)
+        for _, driver in standings.iterrows():
+            if driver['driver_acronym'] == leader['driver_acronym']:
+                gaps.append("Leader") # Leader has no gap
+            else:
+                lap_diff = leader['lap_number'] - driver['lap_number']
+                if lap_diff > 0:
+                    gaps.append(f"+{int(lap_diff)} Lap{'s' if lap_diff > 1 else ''}") # Leader is ahead by laps
+                else:
+                    # Calculate time gap within the same lap by summing lap times up to current lap
+                    leader_total_race_time = lap_times_df[(lap_times_df['driver_acronym'] == leader['driver_acronym']) & (lap_times_df['lap_number'] < leader['lap_number'])]['lap_seconds'].sum()
+
+                    total_race_time = lap_times_df[(lap_times_df['driver_acronym'] == driver['driver_acronym']) & (lap_times_df['lap_number'] < driver['lap_number'])]['lap_seconds'].sum()
+
+                    time_gap = total_race_time - leader_total_race_time
+                    gaps.append(f"+{abs(time_gap):.3f}s") # Force positive gap due to position offsets during lap (e.g. pit stops, safety cars)
+        standings['Gap'] = gaps 
+    else:
+        standings['Gap'] = []
+
+    result = standings[['Pos', 'driver_acronym', 'lap_number', 'compound', 'team_colour', 'compound_colour', 'Gap']].rename(
+        columns={'driver_acronym': 'Driver', 'lap_number': 'Lap', 'compound': 'Compound', 'team_colour': 'team_colour'})
 
     # Attach team name if present in the standings
     if 'team_name' in standings.columns:
@@ -163,8 +279,15 @@ def get_leaderboard_for_frame(frame_data):
     else:
         result['Team'] = ''
 
-    # Reorder columns to Pos, Driver, Team, Lap, team_colour
-    return result[['Pos', 'Driver', 'Team', 'Lap', 'team_colour']]
+    # Recalculate positions in case of ties
+    result = result.sort_values(by='Pos')
+    result['Pos'] = result.groupby('Lap').cumcount() + 1
+    result['Pos'] = result['Pos'].astype(str)
+    result.loc[result['Pos'] == '0', 'Pos'] = ''
+    
+        
+    # Reorder columns to Pos, Driver, Team, Lap, Compound, team_colour, compound_colour
+    return result[['Pos', 'Driver', 'Team', 'Lap', 'Compound', 'team_colour', 'compound_colour', 'Gap']]
 
 # --- Main Replay System ---
 def play_race_replay(session_key):
@@ -184,18 +307,55 @@ def play_race_replay(session_key):
             # if lap_times_df doesn't have team_colour, skip warning
             pass
         
-        # Mark as loaded for session loading position and avoid reloading
-        st.session_state["replay_loaded"] = True
+        #-----------------RACE CONTROL------------------#
+        safety_car_data = raceData.get_safety_car_data(session_key)
+        
+        # Determine Safety Car Laps
+        safety_car_laps = set()
+        if not safety_car_data.empty:
+            # Get all laps that have a "SafetyCar" category message
+            sc_laps = safety_car_data[safety_car_data['category'] == 'SafetyCar']['lap_number'].unique()
+            
+            # Find when the safety car ends.
+            # we assume the safety car period ends on the lap of the last SC message,
+            if len(sc_laps) > 0:
+                min_sc_lap = min(sc_laps)
+                
+                # Find the lap where the track is clear again so we can end the SC period
+                track_clear_df = safety_car_data[
+                    (safety_car_data['lap_number'] > min_sc_lap) &
+                    (safety_car_data['message'].str.contains("TRACK CLEAR", na=False))
+                ]
+                
+                # If no TRACK CLEAR message, assume SC lasts until last SC lap
+                max_sc_lap = max(sc_laps)
+                if not track_clear_df.empty:
+                    max_sc_lap = track_clear_df['lap_number'].min()
 
+                # All laps between the start and end of the SC period are considered SC laps. We include both min and max laps so we cover the entire period.
+                for lap in range(int(min_sc_lap), int(max_sc_lap) + 1):
+                    safety_car_laps.add(lap)
+
+            # Race messages (FIA communications) by lap and exclude SafetyCar messages for faster processing
+            race_messages = {}
+            if not safety_car_data.empty and 'message' in safety_car_data.columns and 'lap_number' in safety_car_data.columns:
+                # Drop rows where message is null and filter out 'SafetyCar' category which is handled separately
+                messages_df = safety_car_data.dropna(subset=['message'])
+                messages_df = messages_df[messages_df['category'] != 'SafetyCar']
+                
+                # Group messages by lap number
+                for lap, group in messages_df.groupby('lap_number'):
+                    race_messages[lap] = " | ".join(group['message'].unique()) # Join if multiple messages on same lap
+        
+        #-----------------MAIN FIG SETUP (cached)------------------#
         # Build or reuse the heavy animated main figure
         main_fig_key = f"main_fig_{session_key}"
         if main_fig_key in st.session_state:
             main_fig = st.session_state[main_fig_key]
         else:
-            #-----------------MAIN FIG SETUP (cached)------------------#
             main_fig = make_subplots(
                 rows=1, cols=2,
-                column_widths=[0.7, 0.4],
+                column_widths=[0.7, 0.55],
                 specs=[[{"type": "xy"}, {"type": "table"}]],
                 horizontal_spacing=0.02,
             )
@@ -208,33 +368,45 @@ def play_race_replay(session_key):
             # Generate Frames for animation (drivers + leaderboard)
             animation_timestamps = df['race_time'].unique()
             frames = []
+            # For each timestamp, create a frame with driver positions and leaderboard (each timestamp would include: track data, drivers data, table, lap number, race message)
             for t in animation_timestamps:
                 frame_data = df[df['race_time'] == t]
-                lb_data = get_leaderboard_for_frame(frame_data)
+                lb_data = get_leaderboard_for_frame(frame_data, lap_times_df)
                 curr_lap = int(frame_data['lap_number'].max()) if not frame_data.empty else 0
+                
+                # Get race message for current lap if any and newline for separation when over multiple messages so it doesnt go off screen
+                curr_message = race_messages.get(curr_lap, "").replace(" | ", "<br>")
+                
+                # Determine track color for safety car status (yellow if safety car on track)
+                track_color = "#D6D602" if curr_lap in safety_car_laps else '#444'
 
+                # Build frame track, driver markers, leaderboard table
                 frames.append(go.Frame(
                     data=[
-                                go.Scatter(
-                                    x=frame_data['x'] + 5, y=frame_data['y'],
-                                    ids=frame_data['driver_acronym'],
-                                    mode='markers+text',
-                                    text=frame_data['driver_acronym'],
-                                    textposition="top center",
-                                    cliponaxis=False,
-                                    textfont=dict(size=13, color="white", weight="bold"),
-                                    marker=dict(color=frame_data['team_colour'], size=16, line=dict(width=1, color='white'))
-                                ),
+                        go.Scatter(line=dict(color=track_color)), # Update track color based on safety car
+                        go.Scatter(
+                            x=frame_data['x'] + 5, y=frame_data['y'],
+                            ids=frame_data['driver_acronym'],
+                            mode='markers+text',
+                            text=frame_data['driver_acronym'],
+                            textposition="top center",
+                            cliponaxis=False,
+                            textfont=dict(size=13, color="white", weight="bold"),
+                            marker=dict(color=frame_data['team_colour'], size=16, line=dict(width=1, color='white'))
+                        ),
                         go.Table(
-                            header=dict(values=["Pos", "Driver", "Team", "Lap"], fill_color='#111', font=dict(color='white', size=16), height=30),
+                            header=dict(values=["Pos", "Driver", "Team", "Lap", "Compound", "Gap to Leader"], fill_color='#111', font=dict(color='white', size=16), height=30),
                             cells=dict(
-                                values=[lb_data.Pos, lb_data.Driver, lb_data.Team, lb_data.Lap],
-                                fill_color=[['#1e1e1e'] * len(lb_data)] * 4,
+                                values=[lb_data.Pos, lb_data.Driver, lb_data.Team, lb_data.Lap, lb_data.Compound, lb_data.Gap],
+                                fill_color=[['#1e1e1e'] * len(lb_data)] * 6,
                                 font=dict(
+                                    # Set font colors for each column, using team and compound colors where available
                                     color=[
                                         ['white'] * len(lb_data),
                                         ['white'] * len(lb_data),
                                         lb_data['team_colour'].tolist() if 'team_colour' in lb_data.columns else ['white'] * len(lb_data),
+                                        ['white'] * len(lb_data),
+                                        lb_data['compound_colour'].tolist() if 'compound_colour' in lb_data.columns else ['white'] * len(lb_data),
                                         ['white'] * len(lb_data)
                                     ],
                                     size=14
@@ -243,40 +415,57 @@ def play_race_replay(session_key):
                             )
                         )
                     ],
-                    layout=go.Layout(title_text=f"Current Lap: {curr_lap}"),
+                    layout=go.Layout(title_text=f"Current Lap: {curr_lap}"f" | {curr_message}"),
                     name=str(t),
-                    traces=[1, 2]
+                    traces=[0, 1, 2] # Update track, drivers, and table
                 ))
 
-            # Initial traces track, drivers, table
-            start_t = animation_timestamps[0]
+            # ----------------- INITIAL TRACES ON LAUNCH -----------------
+            start_t = animation_timestamps[0] # First timestamp
             start_data = df[df['race_time'] == start_t]
-            start_lb = get_leaderboard_for_frame(start_data)
+            start_lb = get_leaderboard_for_frame(start_data, lap_times_df)
+            
+            # Determine track color based on safety car status at lap 1
+            initial_lap = 1
+            track_color = '#FFFF00' if initial_lap in safety_car_laps else '#444'
 
-            main_fig.add_trace(go.Scatter(x=track_df['x'], y=track_df['y'], mode='lines', line=dict(color='#444', width=8), hoverinfo='skip'), row=1, col=1)
+            main_fig.add_trace(go.Scatter(x=track_df['x'], y=track_df['y'], mode='lines', line=dict(color=track_color, width=8), hoverinfo='skip'), row=1, col=1)
 
+            # Driver markers
             main_fig.add_trace(go.Scatter(
                 x=start_data['x'], y=start_data['y'], mode='markers+text', text=start_data['driver_acronym'],
                 textposition='top center', cliponaxis=False, textfont=dict(size=13, color='white', weight='bold'),
-                marker=dict(color=start_data['team_colour'], size=14, line=dict(width=1, color='white'))
+                marker=dict(color=start_data['team_colour'], size=14, line=dict(width=1, color='white')),
+                hovertemplate="<span style='font-size:14px'><b>%{text}</b>",
+                customdata=np.stack((start_data['lap_number']), axis=-1)
             ), row=1, col=1)
-
+            # Leaderboard table
             main_fig.add_trace(go.Table(
-                header=dict(values=["Pos", "Driver", "Team", "Lap"], fill_color='#111', font=dict(color='white', size=16), height=30),
-                cells=dict(values=[start_lb.Pos, start_lb.Driver, start_lb.Team, start_lb.Lap],
-                           fill_color=[['#1e1e1e'] * len(start_lb)] * 4,
-                           font=dict(color=[['white'] * len(start_lb), ['white'] * len(start_lb), start_lb['team_colour'].tolist() if 'team_colour' in start_lb.columns else ['white'] * len(start_lb), ['white'] * len(start_lb)], size=14),
+                header=dict(values=["Pos", "Driver", "Team", "Lap", "Compound", "Gap"], fill_color='#111', font=dict(color='white', size=16), height=30),
+                cells=dict(values=[start_lb.Pos, start_lb.Driver, start_lb.Team, start_lb.Lap, start_lb.Compound, start_lb.Gap],
+                           fill_color=[['#1e1e1e'] * len(start_lb)] * 6,
+                           font=dict(color=[
+                               ['white'] * len(start_lb),
+                               ['white'] * len(start_lb),
+                               start_lb['team_colour'].tolist() if 'team_colour' in start_lb.columns else ['white'] * len(start_lb),
+                               ['white'] * len(start_lb),
+                               start_lb['compound_colour'].tolist() if 'compound_colour' in start_lb.columns else ['white'] * len(start_lb),
+                               ['white'] * len(start_lb)
+                           ], size=14),
                            height=28)
             ), row=1, col=2)
 
             main_fig.frames = frames
-
+            
+            # Get the first frame name for the Restart button
+            first_frame_name = str(animation_timestamps[0]) if len(animation_timestamps) > 0 else None
+            
             # play / pause buttons
             main_fig.update_layout(
                 height=900,
                 plot_bgcolor='rgba(0,0,0,0)',
                 paper_bgcolor='rgba(0,0,0,0)',
-                title=f"Race Start",
+                title=f"Race Start"f"",
                 xaxis=dict(range=[x_min, x_max], visible=False, fixedrange=True),
                 yaxis=dict(range=[y_min, y_max], visible=False, fixedrange=True, scaleanchor="x", scaleratio=1),
                 showlegend=False,
@@ -289,10 +478,28 @@ def play_race_replay(session_key):
                     buttons=[
                         dict(label="▶ Play",
                             method="animate",
-                            args=[None, dict(frame=dict(duration=80, redraw=True), transition=dict(duration=80, easing="linear"), fromcurrent=True)]),
+                            args=[None, dict(
+                                # Runs at normal speed 80ms per frame
+                                frame=dict(duration=80, redraw=True), 
+                                transition=dict(duration=80, easing="linear"),
+                                fromcurrent=True
+                            )]),
                         dict(label="⏸ Pause",
                             method="animate",
-                            args=[[None], dict(frame=dict(duration=0, redraw=False), mode="immediate")])
+                            # pauses the current animation
+                            args=[[None], dict(frame=dict(duration=0, redraw=False), mode="immediate", transition=dict(duration=0))]),
+                        dict(label="⏮ Restart",
+                            method="animate",
+                            # Restarts from first frame
+                            args=[[first_frame_name], dict(frame=dict(duration=0, redraw=True), mode="immediate", transition=dict(duration=0))]),
+                        dict(label="Faster ->>",
+                            method="animate",
+                            # Faster play at 40ms per frame (very hard to pause)
+                            args=[None, dict(frame=dict(duration=60, redraw=True), transition=dict(duration=120, easing="linear"), fromcurrent=True, mode="immediate")]),
+                        dict(label="<<-- Slower",
+                            method="animate",
+                            # Slower play at 120ms per frame
+                            args=[None, dict(frame=dict(duration=120, redraw=True), transition=dict(duration=60, easing="linear"), fromcurrent=True, mode="immediate")])
                     ],
                     bgcolor="white",
                     bordercolor="#444",
@@ -335,7 +542,7 @@ def play_race_replay(session_key):
                         line=dict(color=drv_df['team_colour'].iloc[0], width=2), marker=dict(size=6),
                         text=drv_df['lap_time_fmt'],
                         hovertemplate=f"<span style='font-size:14px'><b>{drv}: %{{text}}</b></span><br>Lap: %{{x}}<extra></extra>",
-                        hoverlabel=dict(font=dict(size=14))
+                        hoverlabel=dict(font=dict(size=14)) 
                     ))
             else: # Show selected driver only
                 drv_df = lap_times_df[lap_times_df['driver_acronym'] == selected_driver]
@@ -456,43 +663,68 @@ def play_race_replay(session_key):
                     max_lap_map = {} # Fallback to empty if any issue
 
                 y_order = pit_data['driver_acronym'].dropna().unique().tolist() # Preserve order of appearance
-
+                
+                #y_order would hold samples like ['HAM', 'VER', 'LEC', 'BOT', ...]
+                #pit_data would have multiple rows per driver with driver_acronym, lap_number, tire_compound, laps_on_tire
+                
                 # Build stints list
                 stints = []
                 for drv in y_order:
                     ddf = pit_data[pit_data['driver_acronym'] == drv].copy()
-                    # If data contains a 'laps_on_tire' and a lap start, use that directly
-                    if laps_on_tire_col and lap_col in ddf.columns:
-                        ddf = ddf.sort_values(lap_col)
-                        # For each row, build stint from lap and laps_on_tire
-                        for _, r in ddf.iterrows():
-                            start = int(r[lap_col])
-                            length = int(r[laps_on_tire_col]) if pd.notna(r[laps_on_tire_col]) else 1
-                            end = start + length - 1
-                            stints.append({'driver': drv, 'start': start, 'end': end, 'compound': (str(r[compound_col]).upper() if compound_col in r and pd.notna(r[compound_col]) else '')})
-                    else:
-                        # Otherwise assume one row per lap with compound, merge contiguous runs
-                        if lap_col not in ddf.columns or compound_col not in ddf.columns:
-                            continue
-                        ddf = ddf.sort_values(lap_col)
-                        current_comp = None
-                        current_start = None
-                        prev_lap = None # Keep track of the previous lap
-                        # Iterate through laps to build stints based on compound changes
-                        for _, r in ddf.iterrows():
-                            lap = int(r[lap_col])
-                            comp = str(r[compound_col]).upper() if pd.notna(r[compound_col]) else ''
-                            if current_comp is None:
-                                current_comp = comp
-                                current_start = lap
-                            elif comp != current_comp: # Compound changed, end current stint
-                                # Use the previously stored lap number for the end of the stint
-                                stints.append({'driver': drv, 'start': current_start, 'end': prev_lap, 'compound': current_comp})
-                                current_comp = comp
-                                current_start = lap
-                            prev_lap = lap # Update previous lap at the end of each iteration
-                        if current_comp is not None:
-                            stints.append({'driver': drv, 'start': current_start, 'end': ddf[lap_col].max(), 'compound': current_comp})
+                    
+                    # Ensure we have the necessary columns
+                    if lap_col not in ddf.columns or compound_col not in ddf.columns:
+                        continue
+                    
+                    # Sort by lap to process sequentially
+                    ddf = ddf.sort_values(lap_col)
+                    
+                    current_comp = None
+                    current_start = None
+                    prev_lap = None 
+                    prev_tire_age = None # Track tire age to detect resets (if stops for same compound)
+                    
+                    # Iterate through laps to build continuos stints as a block of laps rather than individual laps
+                    for _, r in ddf.iterrows():
+                        lap = int(r[lap_col])
+                        comp = str(r[compound_col]).upper() if pd.notna(r[compound_col]) else 'UNKNOWN'
+                        
+                        # Get tire age if available, otherwise default to increasing count (for data without tire age)
+                        current_tire_age = int(r[laps_on_tire_col]) if laps_on_tire_col in ddf.columns and pd.notna(r[laps_on_tire_col]) else (999 if prev_tire_age is None else prev_tire_age + 1)
+
+                        # Initialize first stint
+                        if current_comp is None:
+                            current_comp = comp
+                            current_start = lap
+                        
+                        # If Compound changed or tire age reset or lap gap detected, we break the stint here (fixes issue with same compound stops)
+                        # Also fixes and creates a visual gap between stints
+                        elif (comp != current_comp) or \
+                             (prev_tire_age is not None and current_tire_age < prev_tire_age) or \
+                             (prev_lap is not None and lap > prev_lap + 1):
+                            
+                            # Close the previous stint
+                            stints.append({
+                                'driver': drv, 
+                                'start': current_start, 
+                                'end': prev_lap, # End at previous lap e.g 20
+                                'compound': current_comp
+                            })
+                            # Start new stint
+                            current_comp = comp
+                            current_start = lap # Start at current lap e.g 21 which creates a visual gap between 20 and 21 as intended
+                        
+                        prev_lap = lap 
+                        prev_tire_age = current_tire_age
+                    
+                    # Append the final stint after the loop finishes
+                    if current_comp is not None:
+                        stints.append({
+                            'driver': drv, 
+                            'start': current_start, 
+                            'end': prev_lap, 
+                            'compound': current_comp
+                        })
 
                 # Add traces for each stint to the figure
                 for s in stints:
@@ -500,33 +732,41 @@ def play_race_replay(session_key):
                     start = s.get('start')
                     end = s.get('end')
                     compound = (s.get('compound') or '').upper()
+                    stint_start = start
+                    stint_end = end
 
                     if start is None or end is None or drv is None:
                         continue
 
-                    # Clip stint to driver's max lap if available to get stint end within race
-                    # Reason: sometimes pit data may extend beyond race end due to data issues. Fixes overlapping stints.
-                    max_l = max_lap_map.get(drv, end)
-                    display_end = min(end, max_l)
+                    # Clip stint to driver's max lap if available (some drivers may retire early or not finish)
+                    max_l = max_lap_map.get(drv, end) # Default to end if no max lap info
+                    display_end = min(end, max_l) # Clip to max lap
                     
-                    # Skip stints that end before they start (data issues)
+                    # Skip invalid stints where end is before start after clipping
                     if display_end < start:
                         continue
 
-                    color = compound_colors.get(compound, '#808080') # Default grey if unknown
+                    color = compound_colors.get(compound, '#808080')
                     
-                    # Add the main stint trace on top
+                    # Instead of just start, end, we create a list [start, start+1, start+2... end]
+                    # This ensures the hover works on every single pixel of the bar rather than just the end and start
+                    x_values = list(range(start, display_end + 1))
+                    y_values = [drv] * len(x_values)
+
+                    # Add the main stint trace
                     pit_fig.add_trace(go.Scatter(
-                        x=[start, display_end], # Laps on x-axis
-                        y=[drv, drv], # Driver on y-axis
+                        x=x_values, 
+                        y=y_values, 
                         mode='lines',
                         line=dict(color=color, width=15),
                         name=compound,
                         showlegend=False,
+                        # force the hover to snap to the closest point along the x-axis so it works anywhere on the bar
+                        hoverinfo="text",
                         hovertemplate=(f"Driver: {drv}<br>"
                                        f"Compound: {compound}<br>"
                                        f"Laps: {start}-{end}<br>"
-                                       f"Stint Length: {end - start + 1}<extra></extra>")
+                                       f"Stint Length: {stint_end - stint_start + 1}<extra></extra>")
                     ))
                   
                     
