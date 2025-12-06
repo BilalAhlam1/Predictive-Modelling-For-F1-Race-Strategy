@@ -9,8 +9,159 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '.
 import storeRaceData as raceData
 import storeMLData as mlData
 
+# ---- GLOBAL THEME FOR RACE REPLAY ----
+st.markdown(
+    """
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap');
+
+        :root {
+            --bg: radial-gradient(circle at 10% 20%, #0f172a 0%, #0b1020 35%, #050813 70%);
+            --panel: rgba(255, 255, 255, 0.04);
+            --panel-strong: rgba(255, 255, 255, 0.08);
+            --text: #e5e7eb;
+            --muted: #94a3b8;
+            --accent: #7cf2d4;
+            --accent-2: #7aa2ff;
+            --pill: rgba(255,255,255,0.08);
+            --border: rgba(255,255,255,0.12);
+            --shadow: 0 24px 60px rgba(0,0,0,0.45);
+        }
+
+        html, body, [class^="css"], [class*="css"] {
+            font-family: 'Space Grotesk', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+        }
+
+        .block-container {
+            padding: 2.5rem 2.25rem 3rem 2.25rem;
+            max-width: 100% !important;
+            width: 100% !important;
+        }
+        
+        /* Streamlit's default container restrictions to adjust width based on screen size */
+        .main .block-container {
+            max-width: 100% !important;
+            padding-left: 5% !important;
+            padding-right: 5% !important;
+        }
+
+        /* Hero for Race Replay */
+        .hero-shell {
+            background: linear-gradient(135deg, rgba(124, 242, 212, 0.12), rgba(122, 162, 255, 0.10));
+            border: 1px solid var(--border);
+            box-shadow: var(--shadow);
+            border-radius: 24px;
+            padding: 22px 26px;
+            display: flex;
+            align-items: center;
+            gap: 18px;
+            margin-bottom: 20px;
+        }
+
+        .hero-pill {
+            background: var(--pill);
+            color: var(--text);
+            padding: 8px 14px;
+            border-radius: 999px;
+            font-size: 13px;
+            border: 1px solid var(--border);
+            letter-spacing: 0.03em;
+        }
+
+        .hero-title {
+            font-size: 28px;
+            font-weight: 700;
+            margin: 0;
+            color: #f8fafc;
+        }
+
+        .hero-subtext {
+            margin: 2px 0 0 0;
+            color: var(--muted);
+            font-size: 14px;
+        }
+
+        /* Cards for Session Overview */
+        .glass-card {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            padding: 18px 18px 14px 18px;
+            box-shadow: var(--shadow);
+            margin-bottom: 18px;
+        }
+
+        .card-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: #e2e8f0;
+            margin-bottom: 10px;
+            letter-spacing: 0.01em;
+        }
+
+        .metric-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 12px;
+            margin: 12px 0 4px 0;
+        }
+
+        .metric-tile {
+            background: var(--panel-strong);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 12px 14px;
+        }
+
+        .metric-label {
+            color: var(--muted);
+            font-size: 13px;
+            margin-bottom: 2px;
+        }
+
+        .metric-value {
+            color: #f8fafc;
+            font-size: 20px;
+            font-weight: 600;
+        }
+
+        .element-container .stPlotlyChart {
+            border-radius: 14px;
+            overflow: hidden;
+        }
+
+        /* Form controls */
+        .stSelectbox > div > div {
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            background: rgba(255,255,255,0.03);
+        }
+
+        .stMarkdown a { color: var(--accent); }
+
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 # --- RACE REPLAY SECTION ---
-st.header(f"Race Replay & Telemetry For **{st.session_state['selected_race_name']}**")
+st.markdown(
+    f"""
+    <div class="hero-shell">
+        <div class="hero-pill">Race Replay · Telemetry</div>
+        <div>
+            <div class="hero-title">{st.session_state.get('selected_race_name', 'Race Replay')}</div>
+            <div class="hero-subtext">Session Key: {st.session_state.get('selected_session_key', '—')}</div>
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 if 'selected_session_key' not in st.session_state:
     st.warning("No race selected.")
@@ -306,6 +457,29 @@ def play_race_replay(session_key):
         except Exception:
             # if lap_times_df doesn't have team_colour, skip warning
             pass
+
+        # Quick session overview metrics for header
+        try:
+            driver_count = int(df['driver_acronym'].nunique()) if not df.empty else 0
+            total_laps = int(df['lap_number'].max()) if not df.empty else 0
+            duration_min = int((df['race_time'].max() or 0) // 60) if not df.empty else 0
+        except Exception:
+            driver_count = total_laps = duration_min = 0
+
+        # Display Session Overview Cards
+        st.markdown(
+            """
+            <div class="glass-card">
+                <div class="card-title">Session Snapshot</div>
+                <div class="metric-grid">
+                    <div class="metric-tile"><div class="metric-label">Drivers</div><div class="metric-value">{drivers}</div></div>
+                    <div class="metric-tile"><div class="metric-label">Total Laps</div><div class="metric-value">{laps}</div></div>
+                    <div class="metric-tile"><div class="metric-label">Race Time</div><div class="metric-value">{duration} min</div></div>
+                </div>
+            </div>
+            """.format(drivers=driver_count, laps=total_laps, duration=duration_min),
+            unsafe_allow_html=True,
+        )
         
         #-----------------RACE CONTROL------------------#
         safety_car_data = raceData.get_safety_car_data(session_key)
@@ -355,9 +529,9 @@ def play_race_replay(session_key):
         else:
             main_fig = make_subplots(
                 rows=1, cols=2,
-                column_widths=[0.7, 0.55],
+                column_widths=[0.6, 0.55],
                 specs=[[{"type": "xy"}, {"type": "table"}]],
-                horizontal_spacing=0.02,
+                horizontal_spacing=0.04,
             )
 
             # Define Axis Ranges for main map
@@ -395,10 +569,10 @@ def play_race_replay(session_key):
                             marker=dict(color=frame_data['team_colour'], size=16, line=dict(width=1, color='white'))
                         ),
                         go.Table(
-                            header=dict(values=["Pos", "Driver", "Team", "Lap", "Compound", "Gap to Leader"], fill_color='#111', font=dict(color='white', size=16), height=30),
+                            header=dict(values=["Pos", "Driver", "Team", "Lap", "Compound", "Gap to Leader"], fill_color='#0b1224', font=dict(color='white', size=14), height=26),
                             cells=dict(
                                 values=[lb_data.Pos, lb_data.Driver, lb_data.Team, lb_data.Lap, lb_data.Compound, lb_data.Gap],
-                                fill_color=[['#1e1e1e'] * len(lb_data)] * 6,
+                                fill_color=[['#0f172a'] * len(lb_data)] * 6,
                                 font=dict(
                                     # Set font colors for each column, using team and compound colors where available
                                     color=[
@@ -409,13 +583,46 @@ def play_race_replay(session_key):
                                         lb_data['compound_colour'].tolist() if 'compound_colour' in lb_data.columns else ['white'] * len(lb_data),
                                         ['white'] * len(lb_data)
                                     ],
-                                    size=14
+                                    size=13
                                 ),
-                                height=28
+                                height=30
                             )
                         )
                     ],
-                    layout=go.Layout(title_text=f"Current Lap: {curr_lap}"f" | {curr_message}"),
+                    layout=go.Layout(
+                        title_text=f"Lap {curr_lap}",
+                        title_font=dict(color='#e5e7eb', size=16),
+                        annotations=(
+                            [
+                                dict(
+                                    text="Race Message",
+                                    x=0.82,
+                                    y=-0.04,
+                                    xref='paper',
+                                    yref='paper',
+                                    showarrow=False,
+                                    align='left',
+                                    font=dict(color='#e5e7eb', size=13, family='Space Grotesk', weight='bold'),
+                                ),
+                                dict(
+                                    text=curr_message,
+                                    x=0.82,
+                                    y=-0.12,
+                                    xref='paper',
+                                    yref='paper',
+                                    showarrow=False,
+                                    align='left',
+                                    font=dict(color='#cbd5e1', size=12),
+                                    bgcolor='rgba(255,255,255,0.06)',
+                                    bordercolor='rgba(255,255,255,0.12)',
+                                    borderwidth=1,
+                                    borderpad=6,
+                                    opacity=0.95
+                                )
+                            ]
+                            if curr_message else []
+                        )
+                    ),
                     name=str(t),
                     traces=[0, 1, 2] # Update track, drivers, and table
                 ))
@@ -441,9 +648,9 @@ def play_race_replay(session_key):
             ), row=1, col=1)
             # Leaderboard table
             main_fig.add_trace(go.Table(
-                header=dict(values=["Pos", "Driver", "Team", "Lap", "Compound", "Gap"], fill_color='#111', font=dict(color='white', size=16), height=30),
+                header=dict(values=["Pos", "Driver", "Team", "Lap", "Compound", "Gap"], fill_color='#0b1224', font=dict(color='white', size=14), height=26),
                 cells=dict(values=[start_lb.Pos, start_lb.Driver, start_lb.Team, start_lb.Lap, start_lb.Compound, start_lb.Gap],
-                           fill_color=[['#1e1e1e'] * len(start_lb)] * 6,
+                           fill_color=[['#0f172a'] * len(start_lb)] * 6,
                            font=dict(color=[
                                ['white'] * len(start_lb),
                                ['white'] * len(start_lb),
@@ -451,8 +658,8 @@ def play_race_replay(session_key):
                                ['white'] * len(start_lb),
                                start_lb['compound_colour'].tolist() if 'compound_colour' in start_lb.columns else ['white'] * len(start_lb),
                                ['white'] * len(start_lb)
-                           ], size=14),
-                           height=28)
+                           ], size=13),
+                           height=24)
             ), row=1, col=2)
 
             main_fig.frames = frames
@@ -462,10 +669,11 @@ def play_race_replay(session_key):
             
             # play / pause buttons
             main_fig.update_layout(
-                height=900,
+                height=1100,
                 plot_bgcolor='rgba(0,0,0,0)',
                 paper_bgcolor='rgba(0,0,0,0)',
-                title=f"Race Start"f"",
+                title="Lap 1",
+                font=dict(family='Space Grotesk', color='#e5e7eb'),
                 xaxis=dict(range=[x_min, x_max], visible=False, fixedrange=True),
                 yaxis=dict(range=[y_min, y_max], visible=False, fixedrange=True, scaleanchor="x", scaleratio=1),
                 showlegend=False,
@@ -501,22 +709,26 @@ def play_race_replay(session_key):
                             # Slower play at 120ms per frame
                             args=[None, dict(frame=dict(duration=120, redraw=True), transition=dict(duration=60, easing="linear"), fromcurrent=True, mode="immediate")])
                     ],
-                    bgcolor="white",
-                    bordercolor="#444",
+                    bgcolor="rgba(255,255,255,0.08)",
+                    bordercolor="rgba(255,255,255,0.25)",
                     borderwidth=1,
                     pad={"r": 10, "t": 10},
-                    font=dict(color="black")
+                    font=dict(color="#e5e7eb")
                 )],
-                sliders=[]
+                sliders=[],
+                margin=dict(t=40, l=20, r=20, b=10)
             )
 
             # Cache main_fig in session_state so dropdowns don't rebuild it
             st.session_state[main_fig_key] = main_fig
 
         # Render main figure (track + leaderboard + play/pause buttons)
+        st.markdown("<div class='glass-card'><div class='card-title'>Live Track Replay</div>", unsafe_allow_html=True)
         st.plotly_chart(st.session_state[main_fig_key], use_container_width=True, config={"displayModeBar": False})
+        st.markdown("</div>", unsafe_allow_html=True)
 
         # ----------------- LAP-TIME/PIT INFO GRAPH -----------------
+        st.markdown("<div class='card-title' style='margin:14px 0 4px;'>Performance & Strategy</div>", unsafe_allow_html=True)
         left_col, right_col = st.columns([0.5, 0.5]) # Split for lap time graph and pit info (pit info to be added later)
 
         # --------------- LINE GRAPH (LEFT SIDE) ---------------
@@ -557,7 +769,11 @@ def play_race_replay(session_key):
 
         lap_fig.update_layout(
             xaxis_title='Lap Number', yaxis_title='Lap Time (s)', height=500,
+            template='plotly_dark',
             plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+            font=dict(family='Space Grotesk', color='#e5e7eb'),
+            xaxis=dict(gridcolor='rgba(148,163,184,0.2)', zeroline=False, linecolor='rgba(255,255,255,0.05)'),
+            yaxis=dict(gridcolor='rgba(148,163,184,0.2)', zeroline=False, linecolor='rgba(255,255,255,0.05)'),
             legend=dict(
                 orientation='v',
                 y=1.02,
@@ -567,6 +783,7 @@ def play_race_replay(session_key):
                 traceorder='normal',
                 font=dict(size=12)
             ),
+            hoverlabel=dict(bgcolor='rgba(15,23,42,0.9)', font_size=12),
             showlegend=False,
             margin=dict(t=5)
         )
@@ -790,6 +1007,9 @@ def play_race_replay(session_key):
                     yaxis=dict(categoryorder='array', categoryarray=y_order[::-1]), # Show drivers top to bottom
                     height=chart_height,
                     template='plotly_dark',
+                    font=dict(family='Space Grotesk', color='#e5e7eb'),
+                    plot_bgcolor='rgba(0,0,0,0)',
+                    paper_bgcolor='rgba(0,0,0,0)',
                     showlegend=True
                 )
                 # Render pit figure in right column
