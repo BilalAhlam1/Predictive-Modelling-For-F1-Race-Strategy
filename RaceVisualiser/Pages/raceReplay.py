@@ -724,7 +724,7 @@ def play_race_replay(session_key):
 
         # Render main figure (track + leaderboard + play/pause buttons)
         st.markdown("<div class='glass-card'><div class='card-title'>Live Track Replay</div>", unsafe_allow_html=True)
-        st.plotly_chart(st.session_state[main_fig_key], use_container_width=True, config={"displayModeBar": False})
+        st.plotly_chart(st.session_state[main_fig_key], width='stretch', config={"displayModeBar": False})
         st.markdown("</div>", unsafe_allow_html=True)
 
         # ----------------- LAP-TIME/PIT INFO GRAPH -----------------
@@ -818,7 +818,7 @@ def play_race_replay(session_key):
                     unsafe_allow_html=True
                 )
 
-            st.plotly_chart(lap_fig, use_container_width=True, config={"displayModeBar": False})
+            st.plotly_chart(lap_fig, width='stretch', config={"displayModeBar": False})
             # This selectbox will update st.session_state[sel_key] and cause a rerun 
             # main_fig is cached in session_state so it won't rebuild keeping the race running
             st.selectbox("Driver (lap time graph)", options=["All"] + drivers_list, index=0 if selected_driver == "All" else (drivers_list.index(selected_driver) + 1), key=sel_key)
@@ -1014,7 +1014,7 @@ def play_race_replay(session_key):
                 )
                 # Render pit figure in right column
                 with right_col:
-                    st.plotly_chart(pit_fig, use_container_width=True, config={"displayModeBar": False})
+                    st.plotly_chart(pit_fig, width='stretch', config={"displayModeBar": False})
                     #cols_to_show = ['driver_number', 'driver_acronym'] + [c for c in pit_data.columns if c not in ['driver_number','driver_acronym']]
                     #st.dataframe(pit_data[cols_to_show].head(200))
                 

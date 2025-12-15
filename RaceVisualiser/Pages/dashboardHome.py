@@ -249,13 +249,13 @@ else:
                 track_fig = get_track_map_image(race['session_key'])
                 if track_fig:
                     # Display the plot
-                    st.pyplot(track_fig, use_container_width=True, clear_figure=True)
+                    st.pyplot(track_fig, width='stretch', clear_figure=True)
                 else:
                     # Fallback space if no data
                     st.markdown("<br><br>", unsafe_allow_html=True)
                 
                 # Action Button
-                if st.button("Select Race", key=f"btn_{race['session_key']}", use_container_width=True, type="primary" if is_selected else "secondary"):
+                if st.button("Select Race", key=f"btn_{race['session_key']}", width='stretch', type="primary" if is_selected else "secondary"):
                     st.session_state['selected_session_key'] = race['session_key']
                     st.session_state['selected_race_name'] = race['location']
                     st.rerun()
