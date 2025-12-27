@@ -51,12 +51,13 @@ if "data_loaded" not in st.session_state:
 # Define the pages
 home_page = st.Page("Pages/dashboardHome.py", title="Home", icon="🏠", default=True)
 replay_page = st.Page("Pages/raceReplay.py", title="Race Replay", icon="🏎️")
+prediction_strategy_page = st.Page("Pages/strategyPrediction.py", title="Strategy Prediction", icon="📊")
 
 # Create the Navigation Object
 pg = st.navigation({
     "Dashboard": [home_page],
     "Analysis": [replay_page],
-    "Prediction Model (Coming Soon)": []
+    "Prediction Model (Coming Soon)": [prediction_strategy_page]
 })
 
 # Run the selected page
