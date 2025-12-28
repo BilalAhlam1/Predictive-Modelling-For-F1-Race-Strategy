@@ -57,7 +57,7 @@ prediction_strategy_page = st.Page("Pages/strategyPrediction.py", title="Strateg
 pg = st.navigation({
     "Dashboard": [home_page],
     "Analysis": [replay_page],
-    "Prediction Model (Coming Soon)": [prediction_strategy_page]
+    "Prediction Model": [prediction_strategy_page]
 })
 
 # Run the selected page
