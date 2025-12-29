@@ -564,7 +564,7 @@ def run_simulation(driver_id, session_key, start_lap, end_lap, pit_lap, historic
             input_data['fuel_proxy'] = -1 * lap
             input_data['track_temperature'] = track_temp
             input_data['air_temperature'] = air_temp
-            
+            #print (f"Lap {lap}: Tire Age={virtual_tire_age}, Compound={current_virtual_compound}")
             # One-Hot Encoding for Driver & Compound
             if f"driver_number_{driver_id}" in input_data: input_data[f"driver_number_{driver_id}"] = 1
             if f"tire_compound_{current_virtual_compound}" in input_data: input_data[f"tire_compound_{current_virtual_compound}"] = 1
@@ -661,13 +661,23 @@ def calibrate_and_simulate(driver_id, session_key, start_lap, end_lap, pit_lap, 
     2. Runs Final Simulation with Bias + Re-Overtake Logic.
     """
     
+    # We look up the compound used immediately before the historic pit stop.
+    post_pit_lap = historic_pit_lap - 1
+    
+    if post_pit_lap in historic_map:
+        historic_compound = historic_map[post_pit_lap]['tire_compound']
+    else:
+        # Fallback if map is incomplete
+        historic_compound = tire_compound
+        
     # Calibration Phase
     #print("PHASE 1: Calibration Run")
+    #print("Historic Next Compound:", historic_next_compound)
     control_df = run_simulation(
         driver_id, session_key, start_lap, end_lap, 
         pit_lap=historic_pit_lap, 
         historic_pit_lap=historic_pit_lap,
-        tire_compound=tire_compound, track_temp=track_temp, air_temp=air_temp, 
+        tire_compound=historic_compound, track_temp=track_temp, air_temp=air_temp, 
         pace_bias=0.0,
         history_map=historic_map
     )
@@ -1218,6 +1228,7 @@ def start_simulation(session_key):
                     predicted_lap_times_df = pd.DataFrame(predicted_lap_times)
                     
                     # Plot line chart for historic vs predicted lap times
+                    # TODO: Fix hover for prior pit stop laps to show correct compound
                     lap_fig = go.Figure()
                     lap_fig.add_trace(go.Scatter(
                         x=historic_lap_times['lap_number'], 
