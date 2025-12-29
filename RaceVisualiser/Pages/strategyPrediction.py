@@ -1227,9 +1227,23 @@ def start_simulation(session_key):
                             predicted_lap_times.append({'lap_number': lap, 'predicted_lap_time': lap_time})
                     predicted_lap_times_df = pd.DataFrame(predicted_lap_times)
                     
+                    tire_before_pit_query = text(f"""
+                        SELECT tire_compound 
+                        FROM ml_training_data 
+                        WHERE session_key={session_key} 
+                          AND driver_number={driver_id} 
+                          AND lap_number = {historic_pit_lap - 1}
+                    """)
+                    with engine.connect() as conn:
+                        history_previous_tire_compound = conn.execute(tire_before_pit_query).scalar() or "UNKNOWN"
+                    
                     # Plot line chart for historic vs predicted lap times
-                    # TODO: Fix hover for prior pit stop laps to show correct compound
                     lap_fig = go.Figure()
+                    
+                    # Historic Lap Times
+                    hist_label = f"Active Compound: {historic_tire_compound}<br>Compound before pit: {history_previous_tire_compound}"
+                    hist_customdata = [hist_label] * len(historic_lap_times)
+                    
                     lap_fig.add_trace(go.Scatter(
                         x=historic_lap_times['lap_number'], 
                         y=historic_lap_times['lap_time'],
@@ -1237,13 +1251,18 @@ def start_simulation(session_key):
                         name='Historic Lap Time',
                         line=dict(color='blue'),
                         marker=dict(size=6),
-                        customdata=historic_tire_compound + " | " + historic_lap_times['lap_time'].round(3).astype(str),
-                        hovertemplate='Lap %{x}<br>Time: %{customdata}<extra></extra>',
+                        customdata=hist_customdata,
+                        hovertemplate='Lap %{x}<br>Time: %{y:.3f}s<br>%{customdata}<extra></extra>',
                         hoverlabel=dict(
                             font_color="blue",
                             bgcolor="black"
                         )
                     ))
+                    
+                    # Predicted Lap Times
+                    pred_label = f"Active Compound: {selected_tire_compound}<br>Compound before pit: {history_previous_tire_compound}"
+                    pred_customdata = [pred_label] * len(predicted_lap_times_df)
+                    
                     lap_fig.add_trace(go.Scatter(
                         x=predicted_lap_times_df['lap_number'], 
                         y=predicted_lap_times_df['predicted_lap_time'],
@@ -1251,8 +1270,8 @@ def start_simulation(session_key):
                         name='Predicted Lap Time',
                         line=dict(color='orange'),
                         marker=dict(size=6),
-                        customdata=selected_tire_compound + " | " + predicted_lap_times_df['predicted_lap_time'].round(3).astype(str),
-                        hovertemplate='Lap %{x}<br>Time: %{y:.3f}s<br>Tire: %{customdata}<extra></extra>',
+                        customdata=pred_customdata,
+                        hovertemplate='Lap %{x}<br>Time: %{y:.3f}s<br>%{customdata}<extra></extra>',
                         hoverlabel=dict(
                             font_color="orange",
                             bgcolor="black"
