@@ -444,86 +444,120 @@ def build_historic_pace_map(session_key):
         
     return pace_map
 
-def check_traffic(current_lap, current_cum_time, predicted_pace, driver_id, traffic_map, ignore_list=[]):
+def check_traffic(current_lap, current_finish_time, predicted_pace, driver_id, traffic_map, ignore_list=[]):
     
-    # Filter Logic
-    traffic = traffic_map[
-        (traffic_map['lap_number'] == current_lap) & 
-        (traffic_map['driver_number'] != driver_id) &
-        (~traffic_map['driver_number'].isin(ignore_list))
-    ].copy()
+    # --- FILTER TRAFFIC FOR CURRENT LAP ---
+    # Filter traffic map for current lap
+    lap_traffic = traffic_map[traffic_map['lap_number'] == current_lap].copy()
     
-    traffic['gap'] = current_cum_time - traffic['race_time']
-    cars_ahead = traffic[(traffic['gap'] > 0) & (traffic['gap'] < 1.5)].sort_values('gap') # Lowered gap detection to 1.5s (dirty air zone) for tighter racing.
+    # Calculate gap relative to us
+    lap_traffic['gap_to_us'] = current_finish_time - lap_traffic['race_time']
     
+    # Filter for cars ahead within 2.5s or behind within 0.2s and not in ignore list for cars to battle
+    cars_ahead = lap_traffic[
+        (lap_traffic['gap_to_us'] > -0.2) & 
+        (lap_traffic['gap_to_us'] < 2.5) &
+        (lap_traffic['driver_number'] != driver_id) & 
+        (~lap_traffic['driver_number'].isin(ignore_list))
+    ].sort_values('gap_to_us')
+    
+    # No cars ahead
     if cars_ahead.empty:
         return predicted_pace, "Clean Air", None
     
+    # Identify the closest driver ahead
     target = cars_ahead.iloc[0]
     target_id = int(target['driver_number'])
-    target_pace = target['lap_duration'] 
+    target_finish_time = target['race_time']
+    target_pace = target['lap_duration']
     
+    # --- DRS TRAIN DETECTION ---
+    # Check if the driver ahead is blocked by someone else
+    
+    # Fetch all traffic for the current lap
+    all_traffic = traffic_map[traffic_map['lap_number'] == current_lap]
+    
+    # Calculate gap relative to the driver we are targeting
+    target_gaps = target_finish_time - all_traffic['race_time']
+    
+    # Fetch all drivers within 2s ahead of our target (excluding ourselves and the target)
+    train_ahead = all_traffic[
+        (target_gaps > 0.0) & 
+        (target_gaps < 2.0) & 
+        (all_traffic['driver_number'] != target_id) &
+        (all_traffic['driver_number'] != driver_id)
+    ]
+    
+    # Determine if we are in a DRS train if there's at least one car ahead of our target
+    is_in_drs_train = not train_ahead.empty
+    
+    # --- BATTLE LOGIC ---
+    # Calculate pace difference
     pace_delta = target_pace - predicted_pace
     
-    # If we are 0.4s faster, we go for the overtake
-    if pace_delta > 0.4: 
-        return predicted_pace + 0.3, f"Overtake #{target_id}", target_id
+    # Set required delta based on DRS train status for overtake
+    required_delta = 2.2 if is_in_drs_train else 0.5
     
-    # Match their speed exactly if blocked. Do not add +0.2s.
-    elif pace_delta > -0.1: 
-        return target_pace, f"Blocked by #{target_id}", None
-    
-    else: 
-        # They are faster, we chase.
+    if pace_delta > required_delta:
+        # Successful Overtake
+        status = "Train Break" if is_in_drs_train else "Overtake"
+        return predicted_pace + 0.4, f"{status} #{target_id}", target_id
+        
+    elif pace_delta > -0.2: 
+        # Blocked Behind Target
+        # If in a train, heavy penalty for checking up/dirty air
+        penalty = 0.5 if is_in_drs_train else 0.2
+        
+        # We are forced to drive at the target's speed and add penalty
+        blocked_pace = max(predicted_pace, target_pace + penalty)
+        
+        status = "Stuck in Train" if is_in_drs_train else "Blocked"
+        return blocked_pace, f"{status} behind #{target_id}", None
+            
+    else:
+        # We are slower, run normally
         return predicted_pace, f"Chasing #{target_id}", None
 
 
 # ------------------ RUN SIMULATION ------------------ #
 def run_simulation(driver_id, session_key, start_lap, end_lap, pit_lap, historic_pit_lap, tire_compound, track_temp, air_temp, pace_bias=0.0, history_map=None):
     
-    # intiialize
+    # Initialize
     historic_loss = get_historic_pit_loss(driver_id, session_key)
     traffic_map = build_traffic_map(session_key)
     pace_map = build_historic_pace_map(session_key)
     
-    # Approximate cliff points for tire compounds
+    # Tire cliff limits
     TIRE_LIMITS = {
-        'SOFT': 18,    # Performance drops after 18 laps
-        'MEDIUM': 28,  # Performance drops after 28 laps
-        'HARD': 45,    # Performance drops after 45 laps
+        'SOFT': 18,
+        'MEDIUM': 28,
+        'HARD': 45,    
         'INTERMEDIATE': 30,
         'WET': 30
     }
     
-    # Get initial race time (Start of simulation window)
+    # Get initial race time
     query = text(f"SELECT SUM(lap_duration) FROM ml_training_data WHERE session_key={session_key} AND driver_number={driver_id} AND lap_number < {start_lap}")
     with engine.connect() as conn: 
         start_time = conn.execute(query).scalar() or 0.0
         
     current_race_time = start_time
-    results = []
     
     # Model Columns Check
     if hasattr(rf_model, "feature_names_in_"): correct_cols = rf_model.feature_names_in_
     else: correct_cols = MODEL_COLS 
 
-    #print(f"\nSTARTING SIMULATION (Bias: {pace_bias:.3f} s/lap)")
-
-    # memory structures for battle tracking
-    # passed_cars_memory: set(driver_ids) for cars we've passed recently
-    active_battles = {}  # dict(driver_id: lap_number_passed)
+    active_battles = {} 
     passed_cars_memory = set()
     results = []
     
-    # ---------------- SIMULATION STAGE ------------------ #
-    # We need to track tire age manually for the simulation phases
-    # Start with whatever age the tire was at start_lap
+    # Set initial tire state
     if start_lap in history_map:
         virtual_tire_age = history_map[start_lap]['tire_age']
         current_virtual_compound = history_map[start_lap]['tire_compound'] 
     else:
         virtual_tire_age = 1
-        current_virtual_compound = 'HARD' # Fallback
+        current_virtual_compound = 'HARD'
 
     # ---------------- LOOP THROUGH LAPS ------------------ #
     for lap in range(start_lap, end_lap + 1):
@@ -531,120 +565,114 @@ def run_simulation(driver_id, session_key, start_lap, end_lap, pit_lap, historic
         note = ""
         is_pit_lap = (lap == pit_lap)
         
-        # --- HISTORIC REPLAY ---
-        # If we are before the historic pit AND before our new pit, we are just replaying reality.
+        # Check if we should use historic data when current lap is before both pit stops
         should_use_history = (lap < pit_lap) and (lap < historic_pit_lap)
         
+        # --- HISTORIC DATA (USE IF AVAILABLE AND BEFORE PIT STOPS) ---
         if should_use_history and (lap in history_map):
-            # Copy historic data directly
             final_time = history_map[lap]['lap_duration']
             current_virtual_compound = history_map[lap]['tire_compound']
             virtual_tire_age = history_map[lap]['tire_age']
             note = "Historic Data"
-            
+        
+        # --- OTHERWISE RUN SIMULATION ---
         else:
-            # DETERMINE SIMULATION STAGE
-            if is_pit_lap:
-                current_virtual_compound = tire_compound # Switch to selected tire
-                virtual_tire_age = 0 # Reset age
-                note = f"PIT STOP (+{historic_loss}s)"
-                
-            elif lap > pit_lap:
-                # After the new pit stop
+            # --- COMPOUND LOGIC ---
+            # If we passed the pit lap, we are on the predicted compound
+            if lap > pit_lap:
                 current_virtual_compound = tire_compound
-                # Age increments naturally at end of loop
-                
-            else:
-                # We stayed out past historic pit
-                # Keep using the old compound (passed from previous lap state)
-                note = "Stint Extension"
+            # Otherwise keep using the compound carried over from the previous loop/initialization
 
-            # Prepare Input Data
+            # --- MODEL PREDICTION PREPARATION ---
             input_data = {col: 0 for col in correct_cols}
             input_data['laps_on_tire'] = virtual_tire_age
             input_data['fuel_proxy'] = -1 * lap
             input_data['track_temperature'] = track_temp
             input_data['air_temperature'] = air_temp
-            #print (f"Lap {lap}: Tire Age={virtual_tire_age}, Compound={current_virtual_compound}")
-            # One-Hot Encoding for Driver & Compound
+            
+            # check for driver and tire compound columns
             if f"driver_number_{driver_id}" in input_data: input_data[f"driver_number_{driver_id}"] = 1
             if f"tire_compound_{current_virtual_compound}" in input_data: input_data[f"tire_compound_{current_virtual_compound}"] = 1
             
-            # Model For Historic Compound & Age
+            # Run Prediction with the model
             raw_pace = rf_model.predict(pd.DataFrame([input_data]))[0].sum()
             base_time = raw_pace - pace_bias
             
-            # --- TIRE DEGRADATION ---
-            # If the tire is unrealistically old, apply exponential penalty
-            deg_penalty = 0.0
-            limit = TIRE_LIMITS.get(current_virtual_compound, 30)
+            # ----- APPLY PENALTIES -----
             
+            # --- TIRE DEG ---
+            deg_penalty = 0.0
+            limit = TIRE_LIMITS.get(current_virtual_compound, 30) # Default to 30 if unknown
+            # Calculate degradation if over the limit
             if virtual_tire_age > limit:
                 excess_laps = virtual_tire_age - limit
-                # Formula: 0.08 * (Excess ^ 1.6)
                 deg_penalty = 0.08 * (excess_laps ** 1.6)
-                if deg_penalty > 0.5:
-                    note += f" [Degradation: +{deg_penalty:.1f}s]"
+                if deg_penalty > 0.5: note += f" [Degradation: +{deg_penalty:.1f}s]"
 
-            # --- BATTLE LOGIC ---
-            # Counter-Overtake Logic
-            # Check if anyone we recently passed is fighting back and re-passing us.
+            # --- BATTLE PENALTY (Check if we get re-passed) ---
             battle_penalty = 0.0
-            
-            # Copy keys to modify dict safely
+            # Iterate over active battles and check if we are being re-passed
             for opp_id in list(active_battles.keys()):
                 pass_lap = active_battles[opp_id]
-                
-                # If 2 laps have passed, the battle is won. Move to permanent memory.
+                # If more than 2 laps have passed since the overtake, end the battle (add to memory)
                 if (lap - pass_lap) > 2:
                     del active_battles[opp_id]
                     passed_cars_memory.add(opp_id)
                     continue
                 
-                # Check Opponent's Pace
+                # Check opponent's pace on this lap
                 opp_pace = pace_map.get(opp_id, {}).get(lap, 999.0)
-                
-                # Re-pass Logic
-                # If Opponent is significantly faster (>0.2s) than our base time, they re-pass.
+                # If they are significantly faster, we get re-passed
                 if (base_time - opp_pace) > 0.2:
-                    battle_penalty += 0.8 # We lose significant time being passed
-                    note += f"Re-passed by #{opp_id}!"
-                    
-                    # Remove from battles AND memory. We must fight them again next traffic check.
+                    battle_penalty += 0.8
+                    note += f" Re-passed by #{opp_id}!"
                     del active_battles[opp_id]
                     if opp_id in passed_cars_memory: passed_cars_memory.remove(opp_id)
                 else:
-                    # We defend successfully
-                    battle_penalty += 0.05 # Tiny time loss for defensive line
-            
-            # Apply penalties
+                    battle_penalty += 0.05 # Minor delay while battling
+
+            # Calculate Tentative Time with penalties
             tentative_time = base_time + battle_penalty + deg_penalty
             
-            # Strategy Pit Logic
+            # --- EVENT LOGIC (PIT vs TRAFFIC) ---
             if is_pit_lap:
+                # Pit Lap Logic
                 final_time = tentative_time + historic_loss
                 note = f"PIT STOP (+{historic_loss:.1f}s)"
-                virtual_tire_age = 0 # Reset tires
-            else:
-                # Run Standard Traffic Check
-                # Ignore passed cars memory for this check.
-                # This ensures we don't crash into someone we just passed if we are still close.
+                
+                # Check Traffic on Exit
+                estimated_exit_time = current_race_time + final_time
                 ignore_list = list(passed_cars_memory)
                 
+                # We pass the estimated exit time to check for traffic trains
+                _, traffic_note, _ = check_traffic(
+                    lap, estimated_exit_time, tentative_time, driver_id, traffic_map, ignore_list
+                )
+                if "Stuck" in traffic_note or "Blocked" in traffic_note:
+                    final_time += 1.5 # Heavy penalty for pit exit into traffic
+                    note += " (Exited into Traffic +1.5s)"
+                
+                # Reset tires for next lap
+                virtual_tire_age = 0 
+                
+            else:
+                # Traffic Lap Logic
+                ignore_list = list(passed_cars_memory)
+                predicted_finish_time = current_race_time + tentative_time
+                
                 final_time, traffic_note, passed_id = check_traffic(
-                    lap, current_race_time, tentative_time, driver_id, traffic_map, ignore_list
+                    lap, predicted_finish_time, tentative_time, driver_id, traffic_map, ignore_list
                 )
                 
+                # Append traffic note if not clean
                 if "Clean" not in traffic_note: 
                     note = f"{note} {traffic_note}".strip()
-                
-                # If we passed someone, start the battle timer
                 if passed_id:
                     active_battles[passed_id] = lap
-            
+
         # --- UPDATE STATE ---
         current_race_time += final_time
-        virtual_tire_age += 1 # Increment age for the next lap
+        virtual_tire_age += 1 
         
         results.append({
             "Lap": lap,
