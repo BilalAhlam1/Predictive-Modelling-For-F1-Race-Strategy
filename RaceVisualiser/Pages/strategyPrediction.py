@@ -5,6 +5,7 @@ import joblib
 import numpy as np
 import pandas as pd
 import json
+from scipy.interpolate import Akima1DInterpolator
 from sqlalchemy import create_engine, text
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -672,7 +673,7 @@ def calibrate_and_simulate(driver_id, session_key, start_lap, end_lap, pit_lap, 
         
     # Calibration Phase
     #print("PHASE 1: Calibration Run")
-    #print("Historic Next Compound:", historic_next_compound)
+    print("Historic Next Compound:", historic_compound)
     control_df = run_simulation(
         driver_id, session_key, start_lap, end_lap, 
         pit_lap=historic_pit_lap, 
@@ -929,6 +930,8 @@ def simulate_stint (session_id, driver_id, pit_lap, historic_pit_lap, tire_compo
         lap_start_time = row['CumTime'] - pred_total_time
         ghost_lap['race_time'] = ghost_lap['race_time'] + lap_start_time
         ghost_lap['lap_number'] = lap_num
+        ghost_lap['lap_duration'] = pred_total_time
+        ghost_lap['lap_start_time'] = lap_start_time
         
         ghost_laps_list.append(ghost_lap)
         
@@ -936,6 +939,10 @@ def simulate_stint (session_id, driver_id, pit_lap, historic_pit_lap, tire_compo
     final_ghost = pd.concat(ghost_laps_list, ignore_index=True)
     final_ghost['driver_acronym'] = 'GHOST'
     final_ghost['team_colour'] = "#757576" 
+    
+    final_ghost['driver_number'] = driver_id
+    final_ghost['compound'] = tire_compound
+    final_ghost['team_name'] = "Simulated Ghost"
     
     return final_ghost
 
@@ -1100,6 +1107,16 @@ def get_race_data(key):
     unified_df = pd.concat(aligned_dfs)
     unified_df['lap_number'] = unified_df['lap_number'].fillna(0).astype(int) # Fill missing laps as 0
     return unified_df, lap_times
+
+def str_time_to_seconds(time_str):
+    """Converts a time string in 'M:SS.sss' format to total seconds as float. Will be made redundant once stored properly."""
+    try:
+        # Split '1:26.961' into minutes and seconds
+        minutes, seconds = time_str.split(':')
+        return int(minutes) * 60 + float(seconds)
+    except (ValueError, AttributeError):
+        # Handle cases where data might be missing or already a float
+        return 0.0
 
 def start_simulation(session_key):
     with st.spinner(f"Optimizing {race_name} Data"):
@@ -1286,7 +1303,334 @@ def start_simulation(session_key):
                         height=400
                     )
                     st.plotly_chart(lap_fig, width='stretch')
-                  
+                    
+                # --------------- ANIMATION REPLAY AND POSITION GRAPH ---------------
+                # Add padding to separate from top row
+                st.markdown("<div style='margin-top:24px;'></div>", unsafe_allow_html=True)
+                left_col, right_col = st.columns([0.5, 0.5])
+                
+                # --------------- ANIMATION REPLAY (LEFT COLUMN) ---------------
+                with left_col:
+                    st.markdown("<div style='text-align:center; font-size:16px; font-weight:600; margin-top:16px; margin-bottom:4px'>Strategy Replay</div>", unsafe_allow_html=True)
+                    
+                    # --- DATA PREPARATION ---
+                    replay_start = start_lap
+                    replay_end = max_lap_number
+                    needed_cols = ['x', 'y', 'driver_acronym', 'team_colour', 'race_time', 'lap_number', 'compound', 'lap_start_time']
+                    
+                    # Filter Real Data
+                    real_stint = df.loc[(df['lap_number'] >= replay_start) & (df['lap_number'] <= replay_end), needed_cols].copy()
+                    
+                    # Filter Ghost Data
+                    ghost_stint = ghost_lap_data[needed_cols].copy()
+
+                    # We align the Ghost's start time to the Real Driver's start time to prevent Jumping Ahead at the beginning of the stint
+                    if not real_stint.empty and not ghost_stint.empty:
+                        # Get exact start times
+                        real_start_time = real_stint[real_stint['driver_acronym'] == selected_driver]['race_time'].min()
+                        ghost_start_time = ghost_stint['race_time'].min()
+                        
+                        # Calculate Offset
+                        time_offset = real_start_time - ghost_start_time
+                        
+                        # Apply Offset to Ghost
+                        ghost_stint['race_time'] = ghost_stint['race_time'] + time_offset
+
+                    # Combine Data
+                    all_data = pd.concat([real_stint, ghost_stint], ignore_index=True)
+                    
+                    if not all_data.empty:
+                        min_time = all_data['race_time'].min()
+                        max_time = all_data['race_time'].max()
+                    else:
+                        min_time, max_time = 0, 1
+
+                    # --- MASTER TIMELINE ---
+                    
+                    # Calculate Step Size based on total duration
+                    total_duration = max_time - min_time
+                    if total_duration <= 0: total_duration = 1 
+                    
+                    # Calculate step size to target ~800 frames
+                    target_frames = 800
+                    calculated_step = total_duration / target_frames
+                    step_size = max(0.2, calculated_step)
+                    
+                    # Create Master Timeline to combine all drivers
+                    master_timeline = np.arange(min_time, max_time, step_size)
+                    
+                    # --- INTERPOLATION ---
+                    interpolated_frames = []
+                    unique_drivers = sorted(all_data['driver_acronym'].unique())
+                    
+                    for driver in unique_drivers:
+                        d_data = all_data[all_data['driver_acronym'] == driver].sort_values('race_time')
+                        d_data = d_data.drop_duplicates(subset=['race_time'])
+                        
+                        # Akima needs at least 2 points (prefer 4+ for good curves)
+                        if len(d_data) < 2: 
+                            continue
+
+                        team_color = d_data['team_colour'].iloc[0]
+                        
+                        times = d_data['race_time'].values
+                        x_vals = d_data['x'].values
+                        y_vals = d_data['y'].values
+                        laps = d_data['lap_number'].values
+
+                        # Akima avoids the overshoot or drifting effect on sharp corners (smoothens curves naturally)
+                        try:
+                            if len(d_data) > 3:
+                                akima_x = Akima1DInterpolator(times, x_vals)
+                                akima_y = Akima1DInterpolator(times, y_vals)
+                                
+                                new_x = akima_x(master_timeline)
+                                new_y = akima_y(master_timeline)
+                            else:
+                                # Fallback to linear if very few points available
+                                new_x = np.interp(master_timeline, times, x_vals)
+                                new_y = np.interp(master_timeline, times, y_vals)
+                        except Exception:
+                            # Safety fallback
+                            new_x = np.interp(master_timeline, times, x_vals)
+                            new_y = np.interp(master_timeline, times, y_vals)
+                        
+                        # Laps are always linear (they don't curve)
+                        new_laps = np.interp(master_timeline, times, laps)
+                        new_laps = np.floor(new_laps).astype(int)
+                        
+                        d_frame = pd.DataFrame({
+                            'race_time': master_timeline,
+                            'x': new_x,
+                            'y': new_y,
+                            'driver_acronym': driver,
+                            'team_colour': team_color,
+                            'lap_number': new_laps
+                        })
+                        interpolated_frames.append(d_frame)
+                    
+                    if interpolated_frames:
+                        animation_df = pd.concat(interpolated_frames, ignore_index=True)
+                        animation_df = animation_df.sort_values(['race_time', 'driver_acronym'])
+                        animation_df['frame_time'] = animation_df['race_time'].round(1)
+                        timestamps_to_animate = animation_df['frame_time'].unique()
+                    else:
+                        timestamps_to_animate = []
+
+                    # --- BUILD FIGURE ---
+                    replay_fig_key = f"prediction_replay_{session_key}_{selected_driver}_{selected_pit_lap}"
+                    
+                    # Check if figure is cached in session state
+                    if replay_fig_key in st.session_state:
+                        replay_fig = st.session_state[replay_fig_key]
+                    elif len(timestamps_to_animate) > 0:
+                        replay_fig = go.Figure()
+
+                        # Define Track Boundaries with Padding
+                        padding = 200
+                        x_min, x_max = track_df['x'].min() - padding, track_df['x'].max() + padding
+                        y_min, y_max = track_df['y'].min() - padding, track_df['y'].max() + padding
+                        
+                        # Calculate HUD Position (Top-Center)
+                        hud_x = (x_min + x_max) / 2
+                        hud_y = y_max - (y_max - y_min) * 0.05
+
+                        # --- TRACE STATIC TRACK ---
+                        replay_fig.add_trace(go.Scatter(
+                            x=track_df['x'], y=track_df['y'], 
+                            mode='lines', 
+                            line=dict(color="#333", width=6), 
+                            hoverinfo='skip'
+                        ))
+
+                        # --- TRACE DRIVERS (Initial Position) ---
+                        start_t = timestamps_to_animate[0]
+                        start_data = animation_df[animation_df['frame_time'] == start_t]
+                        
+                        replay_fig.add_trace(go.Scatter(
+                            x=start_data['x'], y=start_data['y'], 
+                            mode='markers+text', 
+                            text=start_data['driver_acronym'],
+                            ids=start_data['driver_acronym'], 
+                            textposition='top center', 
+                            textfont=dict(size=11, color='white', weight='bold'),
+                            marker=dict(color=start_data['team_colour'], size=12, line=dict(width=1, color='white')),
+                            hovertemplate="%{text}",
+                            name='Drivers'
+                        ))
+
+                        # --- TRACE THE LAP NUMBER TITLE ---
+                        replay_fig.add_trace(go.Scatter(
+                            x=[hud_x], 
+                            y=[hud_y],
+                            mode="text",
+                            text=[f"Lap {replay_start}"], # Initial Text
+                            textfont=dict(size=20, color="#e5e7eb", family="Space Grotesk"),
+                            hoverinfo="skip"
+                        ))
+
+                        # --- GENERATE FRAMES ---
+                        frames = []
+                        for t in timestamps_to_animate:
+                            frame_data = animation_df[animation_df['frame_time'] == t]
+                            curr_lap = int(frame_data['lap_number'].max()) if not frame_data.empty else 0
+                            
+                            frames.append(go.Frame(
+                                data=[
+                                    # Keep static track unchanged
+                                    go.Scatter(x=track_df['x'], y=track_df['y']), 
+                                    
+                                    # Update Traced Drivers
+                                    go.Scatter(
+                                        x=frame_data['x'], 
+                                        y=frame_data['y'],
+                                        text=frame_data['driver_acronym'],
+                                        ids=frame_data['driver_acronym'],
+                                        
+                                        # Dynamic Text Font Color where selected driver and ghost are in red and others in white
+                                        textfont=dict(size=11, color=['red' if drv in [selected_driver, 'GHOST'] else 'white' for drv in frame_data['driver_acronym']], weight='bold'),
+                                        marker=dict(color=frame_data['team_colour'], size=12)
+                                    ),
+                                    
+                                    # Update Traced Lap Number Label
+                                    go.Scatter(
+                                        x=[hud_x],
+                                        y=[hud_y],
+                                        text=[f"Lap {curr_lap}"] # UPdate Lap Number
+                                    )
+                                ],
+                                name=str(t)
+                            ))
+                        
+                        replay_fig.frames = frames
+
+                        # --- LAYOUT AND CONTROLS ---
+                        replay_fig.update_layout(
+                            height=1000,
+                            plot_bgcolor='rgba(0,0,0,0)',
+                            paper_bgcolor='rgba(0,0,0,0)',
+                            xaxis=dict(range=[x_min, x_max], visible=False, fixedrange=True),
+                            yaxis=dict(range=[y_min, y_max], visible=False, fixedrange=True, scaleanchor="x", scaleratio=1),
+                            showlegend=False,
+                            margin=dict(t=20, l=20, r=20, b=20),
+                            
+                            # Animation Settings and Buttons
+                            updatemenus=[dict(
+                                type="buttons",
+                                showactive=True,
+                                x=0.5, y=-0.05,
+                                xanchor="center", yanchor="top",
+                                direction="left",
+                                buttons=[
+                                    dict(label="Restart", method="animate", args=[[str(timestamps_to_animate[0])], dict(frame=dict(duration=0, redraw=True), mode="immediate")]),
+                                    dict(label="Slow", method="animate", args=[None, dict(frame=dict(duration=400, redraw=False), transition=dict(duration=400, easing="linear"), fromcurrent=True)]),
+                                    dict(label="Play", method="animate", args=[None, dict(frame=dict(duration=200, redraw=False), transition=dict(duration=200, easing="linear"), fromcurrent=True)]),
+                                    dict(label="Fast", method="animate", args=[None, dict(frame=dict(duration=80, redraw=False), transition=dict(duration=80, easing="linear"), fromcurrent=True)]),
+                                    dict(label="Pause", method="animate", args=[[None], dict(frame=dict(duration=0, redraw=False), mode="immediate")])
+                                ],
+                                bgcolor="rgba(0,0,0,0.5)",
+                                font=dict(color="white", size=14)
+                            )]
+                        )
+                        
+                        st.session_state[replay_fig_key] = replay_fig
+                    else:
+                        st.warning("No data available for animation.")
+                        replay_fig = None
+
+                    if replay_fig:
+                        st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
+                        st.plotly_chart(st.session_state[replay_fig_key], width='stretch', config={"displayModeBar": False})
+                        st.markdown("</div>", unsafe_allow_html=True)
+                        
+                # --------------- POSITION OVER TIME GRAPH (RIGHT COLUMN) ---------------
+                with right_col:
+                    st.markdown("<div style='text-align:center; font-size:16px; font-weight:600; margin-top:16px; margin-bottom:4px'>Position Over Laps</div>", unsafe_allow_html=True)
+                    
+                    # List of dicts that will hold position history
+                    history_list = []
+                    
+                    # Process each lap to calculate positions
+                    laps_to_process = sorted(all_data['lap_number'].unique())
+                    
+                    # Pre-calculate the Field (everyone except the focus drivers)
+                    field_drivers = all_data[~all_data['driver_acronym'].isin([selected_driver, 'GHOST'])]
+                    
+                    # Filter for stint laps only (removed last lap due to inconsistencies)
+                    for lap in laps_to_process:
+                        if lap < start_lap or lap > max_lap_number - 1:
+                            continue
+                            
+                        # Get the Finish Time for the field on this lap
+                        field_lap_data = field_drivers[field_drivers['lap_number'] == lap]
+                        field_times = field_lap_data.groupby('driver_acronym')['race_time'].max()
+                        
+                        # Get Real Driver's Time
+                        real_lap_data = all_data[(all_data['driver_acronym'] == selected_driver) & (all_data['lap_number'] == lap)]
+                        if not real_lap_data.empty:
+                            real_time = real_lap_data['race_time'].max()
+                            
+                            # 1. Compare Real Driver to the Field
+                            real_pos = 1 + (field_times < real_time).sum()
+                            
+                            history_list.append({
+                                'Lap': lap,
+                                'Driver': selected_driver,
+                                'Pos': int(real_pos)
+                            })
+                            
+                        # Get Ghost's Time
+                        ghost_lap_data = all_data[(all_data['driver_acronym'] == 'GHOST') & (all_data['lap_number'] == lap)]
+                        if not ghost_lap_data.empty:
+                            ghost_time = ghost_lap_data['race_time'].max()
+                            
+                            # 2. Compare Ghost to the Field
+                            ghost_pos = 1 + (field_times < ghost_time).sum()
+                            
+                            history_list.append({
+                                'Lap': lap,
+                                'Driver': 'GHOST',
+                                'Pos': int(ghost_pos)
+                            })
+
+                    # Convert to DataFrame
+                    result = pd.DataFrame(history_list)
+                    
+                    # Plot Position Over Laps
+                    if not result.empty:
+                        pos_fig = go.Figure()
+                        
+                        # Blue for History, Orange for Ghost Simulation
+                        colors = {selected_driver: '#1f77b4', 'GHOST': '#ff7f0e'} 
+
+                        for driver_name in result['Driver'].unique():
+                            driver_data = result[result['Driver'] == driver_name]
+                            
+                            pos_fig.add_trace(go.Scatter(
+                                x=driver_data['Lap'],
+                                y=driver_data['Pos'],
+                                mode='lines+markers',
+                                name=driver_name,
+                                line=dict(width=3, color=colors.get(driver_name, '#999')),
+                                marker=dict(size=8),
+                                hovertemplate="Lap %{x}<br>Pos: %{y}<extra></extra>"
+                            ))
+
+                        pos_fig.update_layout(
+                            title=f"Projected Finish vs Reality",
+                            xaxis_title="Lap Number",
+                            yaxis_title="Position",
+                            yaxis_autorange='reversed',  # 1st place at top
+                            yaxis=dict(tickmode='linear', dtick=1), 
+                            template="plotly_white",
+                            height=400,
+                            showlegend=True,
+                            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+                        )
+                        st.plotly_chart(pos_fig, width='stretch')
+                    else:
+                        st.info("Not enough data to calculate position history.")
+    
                   
 # Start the Replay
 start_simulation(session_key)
