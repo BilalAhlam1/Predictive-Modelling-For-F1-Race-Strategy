@@ -393,7 +393,8 @@ def calculate_model_accuracy(simulation_df, session_key, driver_id):
     total_sim_time = valid_comparison['Time'].sum()
     total_actual_time = valid_comparison['Actual_Time'].sum()
     delta = total_sim_time - total_actual_time
-    confidence_score = max(0, 100 - mae)
+    number_of_laps = len(valid_comparison) # Number of valid laps compared in the stint
+    confidence_score = max(0, 100 - mae * number_of_laps * 2)  # Simple confidence metric, scaled by 2 for severity
     
     metrics = {
         "MAE": mae,                             # Average error per lap (seconds)
@@ -904,9 +905,9 @@ def simulate_stint (session_id, driver_id, pit_lap, historic_pit_lap, tire_compo
     acc_df, metrics = calculate_model_accuracy(sim_df, params['session_key'], params['driver_id'])
 
     print(f"Bias Applied: {bias_used:.3f} s/lap")
-    print(f"Total Delta: {metrics['Total_Delta']:.3f} s")
-    print(f"MAE: {metrics['MAE']:.4f} %")
-    print(f"RMSE: {metrics['RMSE']:.4f} %")
+    print(f"Total Delta: {metrics['Total_Delta']:.3f} s slower")
+    print(f"MAE: {metrics['MAE']:.4f} s/lap severity")
+    print(f"RMSE: {metrics['RMSE']:.4f} s/lap severity")
     print(f"Confidence Score: {metrics['Confidence_Score']:.2f}/100")
     
     
