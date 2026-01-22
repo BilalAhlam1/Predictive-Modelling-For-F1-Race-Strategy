@@ -84,12 +84,27 @@ async def process_driver(driver_tuple, semaphore):
 # Fetch drivers for the session
 # ---------------------------
 async def get_drivers():
-    """Get list of drivers for the session as (acronym, number) tuples."""
-    df = api.get_dataframe('drivers', {'session_key': SESSION_KEY})
-    if df.empty:
-        print("No drivers found for this session.")
-        return []
-    return [(row['name_acronym'], row['driver_number']) for _, row in df.iterrows()]
+    """Get list of drivers for the session with retry logic."""
+    import asyncio
+    
+    for attempt in range(3):
+        try:
+            df = api.get_dataframe('drivers', {'session_key': SESSION_KEY})
+            if not df.empty:
+                return [(row['name_acronym'], row['driver_number']) for _, row in df.iterrows()]
+            else:
+                print("No drivers found in API response.")
+                return []
+        except Exception as e:
+            if "429" in str(e):
+                wait = (attempt + 1) * 2
+                print(f"429 Too Many Requests (Drivers). Retrying in {wait}s...")
+                await asyncio.sleep(wait)
+            else:
+                print(f"Error fetching drivers: {e}")
+                break
+                
+    return []
 
 # ---------------------------
 # Main async runner
@@ -189,12 +204,22 @@ async def fetchWithAPI(session_key):
 def fetchMLData(session_key):
     global SESSION_KEY
     SESSION_KEY = session_key
-    "# Check if session data already exists in DB, otherwise run data collection"
+    
+    # Check if session data already exists in DB
     Sessions = db.load_from_db(f"""SELECT * FROM ml_training_data WHERE session_key = {session_key}""")
+    
     if Sessions.empty:
         print(f"Session {session_key} not found in database.")
         df = asyncio.run(fetchWithAPI(session_key))
-        db.save_to_db(df, 'ml_training_data', if_exists='append')
+        
+        # Check if df is valid before saving
+        if df is not None and not df.empty:
+            db.save_to_db(df, 'ml_training_data', if_exists='append')
+            return df
+        else:
+            print(f"Failed to fetch ML data for session {session_key}")
+            return pd.DataFrame() # Return empty DF instead of None
+            
     else:
         #print(f"Session {session_key} found in database.")
         df = db.load_from_db(f"""SELECT * FROM ml_training_data WHERE session_key = {session_key}""")
@@ -213,6 +238,7 @@ def updateMLData(session_key):
         df = asyncio.run(fetchWithAPI(session_key))
         #print(f"Data ready with {len(df)} rows for session {session_key}.")
         return False
+    
 # ---------------------------
 # get season year (adjust month if needed)
 # ---------------------------
@@ -232,19 +258,33 @@ def get_season_year(today=None, season_start_month=3):
 def update_last_five_sessions():
     """
     Fetch the last five session keys and update DB.
-    Returns True only if ALL 5 sessions are successfully processed/verified.
+    Iterates backwards through years to find valid completed races.
     """
-    try:
-        sessions_df = api.get_dataframe('sessions', {
-            'year': get_season_year(), # current year based on season
-            'session_type': 'Race'
-        })
-    except Exception as e:
-        print(f"Error fetching session list: {e}")
-        return False
+    import datetime
+    
+    current_year = datetime.datetime.now().year
+    
+    sessions_df = pd.DataFrame()
+    for year in range(current_year, current_year - 3, -1):
+        try:
+            temp_df = api.get_dataframe('sessions', {
+                'year': year,
+                'session_type': 'Race'
+            })
+            if not temp_df.empty:
+                # Filter for completed races
+                today = datetime.datetime.now().isoformat()
+                completed = temp_df[temp_df['date_start'] < today]
+                
+                if not completed.empty:
+                    sessions_df = completed
+                    break # Found the most recent valid season
+        except Exception as e:
+            print(f"Error checking {year}: {e}")
+            continue
 
     if sessions_df.empty:
-        print("No sessions found.")
+        print("No sessions found in the last 3 years.")
         return False
 
     sessions_df = sessions_df.sort_values('date_start')
@@ -253,26 +293,20 @@ def update_last_five_sessions():
     all_success = True
 
     for _, session in recent_sessions.iterrows():
-        # returns True/False based on success
         result = updateMLData(session['session_key'])
         if not result:
             all_success = False
-            print(f"Issue processing session {session['session_key']}")
 
-    # Handle edge cases for NOT IN clause with fewer than 5 sessions
+    # Cleanup old sessions
     recent_keys = sessions_df['session_key'].tail(5).tolist()
     try:
-        if len(recent_keys) == 0:
-            # Danger: If list is empty, NOT IN () is invalid SQL
-            print("No recent keys provided. Skipping delete to prevent error.")
-        elif len(recent_keys) == 1:
-            # Handle single item (remove trailing comma)
-            keys_str = f"({recent_keys[0]})"
+        if recent_keys:
+            if len(recent_keys) == 1:
+                keys_str = f"({recent_keys[0]})"
+            else:
+                keys_str = str(tuple(recent_keys))
+            
             query = f"DELETE FROM race_telemetry WHERE session_key NOT IN {keys_str}"
-            db.execute_query(query)
-        else:
-            # Handle multiple items
-            query = f"DELETE FROM race_telemetry WHERE session_key NOT IN {tuple(recent_keys)}"
             db.execute_query(query)
     except Exception as e:
         print(f"Error cleaning up old sessions: {e}")

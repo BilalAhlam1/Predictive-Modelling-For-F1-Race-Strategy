@@ -16,9 +16,6 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '.
 import storeRaceData as raceData
 import storeMLData as mlData
 
-st.session_state['selected_session_key'] = 9839
-st.session_state['selected_race_name'] = "Sample Grand Prix"
-
 # ---- GLOBAL THEME FOR RACE REPLAY ----
 st.markdown(
     """
@@ -231,32 +228,24 @@ DB_URL = f"sqlite:///{db_file}"
 engine = create_engine(DB_URL)
 print(f"Connected to Database")
 
-# Load the saved assets
-base_path = '../../TrainingModel/models/'
+current_script_dir = os.path.dirname(os.path.abspath(__file__))
+base_path = os.path.join(current_script_dir, '../../TrainingModel/models/')
+base_path = os.path.normpath(base_path) + os.sep  # Normalize to fix slashes
 
-# Load assets using the base path
-MODEL = joblib.load(base_path + 'lap_times_v1_model.joblib')
-MODEL_COLS = joblib.load(base_path + 'lap_times_v1_columns.joblib')
+print(f"Loading models from: {base_path}")
 
-with open(base_path + 'lap_times_v1_metrics.json', 'r') as f:
-    GLOBAL_METRICS = json.load(f)
+try:
+    MODEL = joblib.load(base_path + 'lap_times_v1_model.joblib')
+    MODEL_COLS = joblib.load(base_path + 'lap_times_v1_columns.joblib')
 
-rf_model = MODEL
+    with open(base_path + 'lap_times_v1_metrics.json', 'r') as f:
+        GLOBAL_METRICS = json.load(f)
 
-# Fetch data from ml_training_data database
-session_key = session_key
-def load_from_db():
-    """
-    Executes a SQL query and returns a Pandas DataFrame.
-    """
-    try:
-        with engine.connect() as conn:
-            return pd.read_sql(f"""SELECT * FROM ml_training_data WHERE session_key = {session_key}""", conn)
-    except Exception as e:
-        print(f"Error loading from DB: {e}")
-        return pd.DataFrame()
-
-data = load_from_db()
+    rf_model = MODEL
+    print("Models loaded successfully.")
+except FileNotFoundError as e:
+    print(f"ERROR: Could not find model files. Checked path: {base_path}")
+    raise e
     
 # ------------------ PIT LOSS MODEL ------------------ #
 def get_historic_pit_loss(driver_id, session_key):
@@ -267,42 +256,92 @@ def get_historic_pit_loss(driver_id, session_key):
     
     # Query to get lap data for the specified driver and session
     query = text(f"""
-        SELECT lap_number, lap_duration, is_pit_out_lap
+        SELECT driver_number, lap_number, lap_duration, is_pit_out_lap
         FROM ml_training_data 
-        WHERE session_key = {session_key} 
-        AND driver_number = {driver_id}
-        ORDER BY lap_number
+        WHERE session_key = {session_key}
+        ORDER BY driver_number, lap_number
     """)
     
     with engine.connect() as conn:
-        df = pd.read_sql(query, conn)
+        session_df = pd.read_sql(query, conn)
     
-    # Filter for pit out laps
-    pit_out_laps = df[df['is_pit_out_lap'] == 1]['lap_number'].tolist()
-    losses = []
+    if session_df.empty:
+        return 22.0 # Standard default if no data exists
+    
+    # Helper function to calculate valid losses from a dataframe
+    def calculate_losses_from_df(df_subset):
+        valid_losses = []
+        # Identify Pit Out Laps
+        pit_out_laps = df_subset[df_subset['is_pit_out_lap'] == 1]['lap_number'].unique()
+        
+        for out_lap_idx in pit_out_laps:
+            in_lap_idx = out_lap_idx - 1
+            
+            # Get In-Lap and Out-Lap Data
+            try:
+                in_rows = df_subset[df_subset['lap_number'] == in_lap_idx]
+                out_rows = df_subset[df_subset['lap_number'] == out_lap_idx]
+                
+                if in_rows.empty or out_rows.empty: continue
+                
+                in_lap_time = in_rows['lap_duration'].values[0]
+                out_lap_time = out_rows['lap_duration'].values[0]
+            except Exception:
+                continue
+            
+            # Get Reference Laps (3 laps before the In-Lap)
+            ref_laps = [in_lap_idx - 1, in_lap_idx - 2, in_lap_idx - 3]
+            
+            clean_candidates = df_subset[
+                (df_subset['lap_number'].isin(ref_laps)) & 
+                (df_subset['is_pit_out_lap'] == 0)
+            ]
+            
+            if clean_candidates.empty:
+                continue
+                
+            ref_pace = clean_candidates['lap_duration'].mean()
+            
+            # Calculate Total Loss
+            # (In_Lap - Ref) + (Out_Lap - Ref)
+            loss = (in_lap_time - ref_pace) + (out_lap_time - ref_pace)
+            
+            # A typical pit loss is 18s - 25s. 
+            # < 15s is likely VSC/SC. > 35s is likely a wing change/penalty.
+            if 16.0 < loss < 32.0:
+                valid_losses.append(loss)
+                
+        return valid_losses
 
-    for lap in pit_out_laps:
-        # Get pit lap time
-        pit_time_series = df.loc[df['lap_number'] == lap, 'lap_duration']
-        if pit_time_series.empty: continue
-        pit_time = pit_time_series.values[0]
-        
-        # Compare vs clean lap (lap + 2) and (lap + 3) to avoid immediate out-lap effects
-        clean_candidates = df.loc[
-            (df['lap_number'].isin([lap + 2, lap + 3])) & (df['is_pit_out_lap'] == 0), 
-            'lap_duration'
-        ]
-        
-        # Calculate loss if clean candidates exist by averaging them and subtracting from pit time
-        if not clean_candidates.empty:
-            loss = pit_time - clean_candidates.mean()
-            losses.append(loss)
+    # --- Calculate for Specific Driver ---
+    driver_data = session_df[session_df['driver_number'] == driver_id].copy()
+    driver_losses = calculate_losses_from_df(driver_data)
     
-    # Return average if data exists, else default to 20s
-    if losses:
-        return float(np.mean(losses))
-    else:
-        return 20.0
+    if driver_losses:
+        avg_loss = float(np.mean(driver_losses))
+        print(f"Driver {driver_id} Pit Loss: {avg_loss:.2f}s (Based on {len(driver_losses)} stops)")
+        return avg_loss
+    
+    # --- Calculate Session Average ---
+    print(f"No valid green-flag stops for Driver {driver_id}. Calculating session average...")
+    
+    # We calculate losses for ALL drivers in the dataframe
+    # Iterate through each unique driver number in the session df
+    all_losses = []
+    unique_drivers = session_df['driver_number'].unique()
+    
+    for d_id in unique_drivers:
+        d_subset = session_df[session_df['driver_number'] == d_id].copy()
+        all_losses.extend(calculate_losses_from_df(d_subset))
+        
+    if all_losses:
+        session_avg = float(np.mean(all_losses))
+        print(f"Session Average Pit Loss: {session_avg:.2f}s (Based on {len(all_losses)} stops)")
+        return session_avg
+        
+    # --- Calculate Default ---
+    print("Warning: Could not calculate pit loss from session data. Using default.")
+    return 22.0
     
 # ------------------ BUILD TIMELINE DATAFRAME ------------------ #
 def predict_strategy_with_history(driver_id, start_lap, end_lap, pit_stop_lap, tire_compound, track_temp, air_temp, historic_loss):
@@ -387,13 +426,14 @@ def calculate_model_accuracy(simulation_df, session_key, driver_id):
     
     mae = mean_absolute_error(valid_comparison['Actual_Time'], valid_comparison['Time'])
     rmse = np.sqrt(mean_squared_error(valid_comparison['Actual_Time'], valid_comparison['Time']))
-    delta = valid_comparison['Time'].sum() - valid_comparison['Actual_Time'].sum()
     
     # Total Race Time Difference
     total_sim_time = valid_comparison['Time'].sum()
     total_actual_time = valid_comparison['Actual_Time'].sum()
     delta = total_sim_time - total_actual_time
+    #print(f"Total Sim Time: {total_sim_time:.3f}s | Total Actual Time: {total_actual_time:.3f}s | Delta: {delta:.3f}s")
     number_of_laps = len(valid_comparison) # Number of valid laps compared in the stint
+    print(f"Number of Laps Compared: {number_of_laps}")
     confidence_score = max(0, 100 - mae * number_of_laps * 2)  # Simple confidence metric, scaled by 2 for severity
     
     metrics = {
@@ -424,6 +464,89 @@ def build_traffic_map(session_key):
     # Calculate Cumulative Race Time (Total of lap durations)
     df['race_time'] = df.groupby('driver_number')['lap_duration'].cumsum()
     return df
+
+# ------------------ DRIVER PROFILE (Overtake Thresholds) ------------------ #
+def get_overtake_thresholds(driver_number):
+    """
+    Fetches race data for ALL drivers to build a Position Map.
+    Calculates the specific driver's Aggression (Overtake Efficiency).
+    Returns the tuned required deltas (DRS / Normal).
+    """
+    
+    # --- Fetch Context (ALL Drivers) ---
+    query = text(f"""
+        SELECT driver_number, lap_number, lap_duration 
+        FROM ml_training_data 
+        WHERE session_key = {session_key} 
+        ORDER BY driver_number, lap_number
+    """)
+    
+    with engine.connect() as conn:
+        df = pd.read_sql(query, conn)
+
+    if df.empty:
+        return 1.5, 0.6 # Safe defaults
+
+    # --- Create the Position Map ---
+    
+    # Calculate Total Race Time for every driver
+    df = df.sort_values(['driver_number', 'lap_number'])
+    df['race_time'] = df.groupby(['driver_number'])['lap_duration'].cumsum()
+
+    # Calculate Position for every lap based on race_time
+    # Rank drivers based on who has the lowest race_time for that specific lap
+    df['position'] = df.groupby(['lap_number'])['race_time'].rank(method='first')
+
+    # Calculate Field Average Pace for every lap
+    # benchmark to see if a driver was fast during an overtake
+    df['field_avg'] = df.groupby(['lap_number'])['lap_duration'].transform('mean')
+
+    # --- Analyze the driver ---
+    
+    # Filter for the specific driver
+    driver_df = df[df['driver_number'] == driver_number].copy()
+    
+    if driver_df.empty:
+        return 1.5, 0.6 # Safe defaults
+
+    # Identify Previous Position
+    driver_df['prev_position'] = driver_df['position'].shift(1)
+    
+    # Identify Overtakes where Position improved (and not Lap 1)
+    # We use a threshold (e.g., lap_duration < 100) to ensure we don't count passing people who are pitting as a skill
+    overtakes = driver_df[
+        (driver_df['position'] < driver_df['prev_position']) & 
+        (driver_df['lap_number'] > 1) &
+        (driver_df['lap_duration'] < 120) # Basic Pit Stop Filter
+    ].copy()
+
+    # --- Calculate Aggression Score ---
+    
+    # Default: Neutral
+    aggression_score = 0.5 
+    
+    if not overtakes.empty:
+        # Calculate Pace Advantage = (Field Avg) - (Driver Time)
+        # Positive means they were faster than average when overtaking
+        overtakes['pace_advantage'] = overtakes['field_avg'] - overtakes['lap_duration']
+        
+        # Average pace advantage during overtakes
+        avg_pass_delta = overtakes['pace_advantage'].mean()
+        
+        # Normalize delta to a 0.0 - 1.0 scale for aggression
+        clamped_delta = np.clip(avg_pass_delta, 0.2, 1.5)
+        aggression_score = 1.0 - ((clamped_delta - 0.2) / (1.3)) # 1.3 is the range (1.5-0.2)
+
+    # --- Return Thresholds ---
+    
+    # Global Averages (Modern F1) Likely to be Adjusted
+    AVG_DRS_DELTA = 1.0
+    AVG_NORMAL_DELTA = 0.6 
+    
+    # Apply Modifier based on Aggression Score
+    modifier = 1.1 - (aggression_score * 0.4) 
+    
+    return round(AVG_DRS_DELTA * modifier, 3), round(AVG_NORMAL_DELTA * modifier, 3)
 
 def build_historic_pace_map(session_key):
     """
@@ -496,8 +619,12 @@ def check_traffic(current_lap, current_finish_time, predicted_pace, driver_id, t
     # Calculate pace difference
     pace_delta = target_pace - predicted_pace
     
+    # Fetch personal overtake thresholds
+    personal_drs_delta, personal_normal_delta = get_overtake_thresholds(target_id)
+    #print(f"Checking Traffic: Target #{target_id} | Pace Delta: {pace_delta:.3f}s | In DRS Train: {is_in_drs_train}")
+    
     # Set required delta based on DRS train status for overtake
-    required_delta = 2.2 if is_in_drs_train else 0.5
+    required_delta = personal_drs_delta if is_in_drs_train else personal_normal_delta
     
     if pace_delta > required_delta:
         # Successful Overtake
@@ -562,7 +689,6 @@ def run_simulation(driver_id, session_key, start_lap, end_lap, pit_lap, historic
 
     # ---------------- LOOP THROUGH LAPS ------------------ #
     for lap in range(start_lap, end_lap + 1):
-        
         note = ""
         is_pit_lap = (lap == pit_lap)
         
@@ -598,6 +724,8 @@ def run_simulation(driver_id, session_key, start_lap, end_lap, pit_lap, historic
             # Run Prediction with the model
             raw_pace = rf_model.predict(pd.DataFrame([input_data]))[0].sum()
             base_time = raw_pace - pace_bias
+            
+            print ("Base Time is:", base_time, "For Lap ", lap)
             
             # ----- APPLY PENALTIES -----
             
@@ -650,8 +778,8 @@ def run_simulation(driver_id, session_key, start_lap, end_lap, pit_lap, historic
                     lap, estimated_exit_time, tentative_time, driver_id, traffic_map, ignore_list
                 )
                 if "Stuck" in traffic_note or "Blocked" in traffic_note:
-                    final_time += 1.5 # Heavy penalty for pit exit into traffic
-                    note += " (Exited into Traffic +1.5s)"
+                    final_time += 1.0 # Heavy penalty for pit exit into traffic
+                    note += " (Exited into Traffic +1.0s)"
                 
                 # Reset tires for next lap
                 virtual_tire_age = 0 
@@ -700,9 +828,9 @@ def calibrate_and_simulate(driver_id, session_key, start_lap, end_lap, pit_lap, 
         # Fallback if map is incomplete
         historic_compound = tire_compound
         
+    print ("Historic Compound for Calibration:", historic_compound)
     # Calibration Phase
     #print("PHASE 1: Calibration Run")
-    print("Historic Next Compound:", historic_compound)
     control_df = run_simulation(
         driver_id, session_key, start_lap, end_lap, 
         pit_lap=historic_pit_lap, 
@@ -713,11 +841,32 @@ def calibrate_and_simulate(driver_id, session_key, start_lap, end_lap, pit_lap, 
     )
     
     # Calculate Bias
-    query = text(f"SELECT SUM(lap_duration) FROM ml_training_data WHERE session_key={session_key} AND driver_number={driver_id} AND lap_number BETWEEN {start_lap} AND {end_lap}")
-    with engine.connect() as conn: actual_total = conn.execute(query).scalar()
+    query = text(f"""
+        SELECT lap_number as "Lap", lap_duration as "Actual_Time"
+        FROM ml_training_data 
+        WHERE session_key={session_key} 
+        AND driver_number={driver_id} 
+        AND lap_number BETWEEN {start_lap} AND {end_lap}
+        AND lap_duration IS NOT NULL
+    """)
+    
+    with engine.connect() as conn:
+        actual_df = pd.read_sql(query, conn)
+    
+    # Merge Simulation with Actuals to compare perfectly aligned laps only
+    merged_df = pd.merge(control_df, actual_df, on='Lap', how='inner')
+    
+    if not merged_df.empty:
+        # Calculate difference for every single lap
+        merged_df['delta'] = merged_df['Time'] - merged_df['Actual_Time']
         
-    sim_total = control_df['Time'].sum()
-    bias = (sim_total - actual_total) / (end_lap - start_lap + 1)
+        # Use MEDIAN to filter out extreme outliers (like pit stop deltas or slow laps)
+        bias = merged_df['delta'].median()
+        print(f"Calibrated Bias (Median): {bias:.3f} s/lap (Sample size: {len(merged_df)} laps)")
+    else:
+        # Fallback if data is missing
+        bias = 0.0
+        print("Warning: No matching laps for bias calibration. Using 0.0.")
     
     # Strategy Phase
     #print(f"PHASE 2: Final Strategy (Bias: {bias:.3f})...")
@@ -1258,21 +1407,32 @@ def start_simulation(session_key):
                 with right_col:
                     st.markdown("<div style='text-align:center; font-size:16px; font-weight:600; margin-bottom:4px;'>Lap Time Comparison</div>", unsafe_allow_html=True)
 
-                    # Prepare Data for Comparison Graph
-                    historic_lap_times = lap_times_df[lap_times_df['driver_acronym'] == selected_driver].copy()
+                    # --- FETCH RAW HISTORIC DATA ---
+                    # Replaces the previous dataframe filtering to ensure accuracy
+                    hist_query = text(f"""
+                        SELECT lap_number, lap_duration
+                        FROM ml_training_data 
+                        WHERE session_key = {session_key} 
+                          AND driver_number = {driver_id}
+                          AND lap_number BETWEEN {start_lap - 10} AND {max_lap_number}
+                        ORDER BY lap_number
+                    """)
                     
-                    # Fetch laps from start_lap to max_lap_number
-                    historic_lap_times = historic_lap_times[(historic_lap_times['lap_number'] >= start_lap - 10) & (historic_lap_times['lap_number'] <= max_lap_number)]
-                    
+                    with engine.connect() as conn:
+                        historic_lap_times = pd.read_sql(hist_query, conn)
+
+                    # --- CALCULATE PREDICTED DATA ---
                     # Calculate Predicted Lap Times from Ghost Data by differencing race_time
                     predicted_lap_times = []
                     for lap in range(start_lap, max_lap_number + 1):
                         lap_data = ghost_lap_data[ghost_lap_data['lap_number'] == lap]
                         if not lap_data.empty:
+                            # Calculate duration: End Time - Start Time
                             lap_time = lap_data['race_time'].max() - lap_data['race_time'].min()
                             predicted_lap_times.append({'lap_number': lap, 'predicted_lap_time': lap_time})
                     predicted_lap_times_df = pd.DataFrame(predicted_lap_times)
                     
+                    # Fetch compound info for tooltip
                     tire_before_pit_query = text(f"""
                         SELECT tire_compound 
                         FROM ml_training_data 
@@ -1283,46 +1443,43 @@ def start_simulation(session_key):
                     with engine.connect() as conn:
                         history_previous_tire_compound = conn.execute(tire_before_pit_query).scalar() or "UNKNOWN"
                     
-                    # Plot line chart for historic vs predicted lap times
+                    # --- PLOT FIGURE ---
                     lap_fig = go.Figure()
                     
                     # Historic Lap Times
-                    hist_label = f"Active Compound: {historic_tire_compound}<br>Compound before pit: {history_previous_tire_compound}"
-                    hist_customdata = [hist_label] * len(historic_lap_times)
-                    
-                    lap_fig.add_trace(go.Scatter(
-                        x=historic_lap_times['lap_number'], 
-                        y=historic_lap_times['lap_time'],
-                        mode='lines+markers',
-                        name='Historic Lap Time',
-                        line=dict(color='blue'),
-                        marker=dict(size=6),
-                        customdata=hist_customdata,
-                        hovertemplate='Lap %{x}<br>Time: %{y:.3f}s<br>%{customdata}<extra></extra>',
-                        hoverlabel=dict(
-                            font_color="blue",
-                            bgcolor="black"
-                        )
-                    ))
+                    if not historic_lap_times.empty:
+                        hist_label = f"Active Compound: {historic_tire_compound}<br>Compound before pit: {history_previous_tire_compound}"
+                        hist_customdata = [hist_label] * len(historic_lap_times)
+                        
+                        lap_fig.add_trace(go.Scatter(
+                            x=historic_lap_times['lap_number'], 
+                            y=historic_lap_times['lap_duration'], # FIXED: Uses raw 'lap_duration'
+                            mode='lines+markers',
+                            name='Historic Lap Time',
+                            line=dict(color='blue'),
+                            marker=dict(size=6),
+                            customdata=hist_customdata,
+                            hovertemplate='Lap %{x}<br>Time: %{y:.3f}s<br>%{customdata}<extra></extra>',
+                            hoverlabel=dict(font_color="blue", bgcolor="black")
+                        ))
                     
                     # Predicted Lap Times
-                    pred_label = f"Active Compound: {selected_tire_compound}<br>Compound before pit: {history_previous_tire_compound}"
-                    pred_customdata = [pred_label] * len(predicted_lap_times_df)
-                    
-                    lap_fig.add_trace(go.Scatter(
-                        x=predicted_lap_times_df['lap_number'], 
-                        y=predicted_lap_times_df['predicted_lap_time'],
-                        mode='lines+markers',
-                        name='Predicted Lap Time',
-                        line=dict(color='orange'),
-                        marker=dict(size=6),
-                        customdata=pred_customdata,
-                        hovertemplate='Lap %{x}<br>Time: %{y:.3f}s<br>%{customdata}<extra></extra>',
-                        hoverlabel=dict(
-                            font_color="orange",
-                            bgcolor="black"
-                        )
-                    ))
+                    if not predicted_lap_times_df.empty:
+                        pred_label = f"Active Compound: {selected_tire_compound}<br>Compound before pit: {history_previous_tire_compound}"
+                        pred_customdata = [pred_label] * len(predicted_lap_times_df)
+                        
+                        lap_fig.add_trace(go.Scatter(
+                            x=predicted_lap_times_df['lap_number'], 
+                            y=predicted_lap_times_df['predicted_lap_time'],
+                            mode='lines+markers',
+                            name='Predicted Lap Time',
+                            line=dict(color='orange'),
+                            marker=dict(size=6),
+                            customdata=pred_customdata,
+                            hovertemplate='Lap %{x}<br>Time: %{y:.3f}s<br>%{customdata}<extra></extra>',
+                            hoverlabel=dict(font_color="orange", bgcolor="black")
+                        ))
+
                     lap_fig.update_layout(
                         title=f"Lap Time Comparison for {selected_driver}",
                         xaxis_title="Lap Number",

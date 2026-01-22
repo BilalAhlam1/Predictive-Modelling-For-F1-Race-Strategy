@@ -343,24 +343,48 @@ def update_last_five_sessions():
     return all_success
 
 def tableOfRaces():
-    sessions_df = api.get_dataframe('sessions', {
-    'year': time.localtime().tm_year,
-    'session_type': 'Race' 
-    })
+    """
+    Robustly fetches the last 5 completed races with valid data.
+    Iterates backwards from the current year until it finds data (e.g., hits 2024).
+    """
+    import datetime
+    
+    # Start from the current system year
+    current_year = datetime.datetime.now().year
+    
+    # Look back up to 3 years for completed races
+    for year in range(current_year, current_year - 3, -1):
+        print(f"Checking for race data in {year}...")
+        
+        try:
+            sessions_df = api.get_dataframe('sessions', {
+                'year': year,
+                'session_type': 'Race'
+            })
+            
+            if not sessions_df.empty:
+                # We add a buffer of 24 hours to ensure data has been processed
+                today = datetime.datetime.now().isoformat()
+                completed_races = sessions_df[sessions_df['date_start'] < today].copy()
+                
+                if not completed_races.empty:
+                    # Sort by date and get the last 5
+                    completed_races = completed_races.sort_values('date_start', ascending=True)
+                    recent_sessions = completed_races.tail(5)
+                    
+                    print(f"Found {len(recent_sessions)} completed races in {year}.")
+                    print("Recent F1 Races:")
+                    print("=" * 60)
+                    for _, session in recent_sessions.iterrows():
+                        print(f"{session['country_name']} GP - {session['location']} (Key: {session['session_key']})")
+                    
+                    return recent_sessions
+        except Exception as e:
+            print(f"Error fetching {year}: {e}")
+            continue
 
-    # Display last 5 races
-    if not sessions_df.empty:
-        sessions_df = sessions_df.sort_values('date_start')
-        recent_sessions = sessions_df.tail(5)
-        print("Recent F1 Races:")
-        print("=" * 60)
-        for _, session in recent_sessions.iterrows():
-            print(f"{session['country_name']} GP - {session['location']}")
-            print(f"   Session Key: {session['session_key']}")
-            print(f"   Date: {session['date_start'][:10]}")
-            print()
-
-    return recent_sessions
+    print("No completed race data found in the last 3 years.")
+    return pd.DataFrame()
 
 def get_track_layout(session_key):
     """

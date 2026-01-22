@@ -212,7 +212,12 @@ st.markdown(
 )
 
 # --- RACE CALENDAR / SELECTION SECTION --- #
-session_df = raceData.tableOfRaces()
+@st.cache_data(ttl=3600)  # Cache data for 1 hour to fix performance and stress load on API fetches
+def get_cached_races():
+    return raceData.tableOfRaces()
+
+# --- MAIN SELECTION --- #
+session_df = get_cached_races()
 
 if session_df.empty:
     st.error("No race data available.")
