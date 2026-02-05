@@ -157,18 +157,27 @@ st.markdown(
 )
 
 # ------------------ RACE REPLAY SECTION ------------------ # 
-st.markdown(
-    f"""
-    <div class="hero-shell">
-        <div class="hero-pill">Race Replay · Telemetry</div>
-        <div>
-            <div class="hero-title">{st.session_state.get('selected_race_name', 'Race Replay')}</div>
-            <div class="hero-subtext">Session Key: {st.session_state.get('selected_session_key', '—')}</div>
+# 1. Setup the UI Shell
+hero_placeholder = st.empty() # This allows us to overwrite the card later
+
+# 2. Render initial state (or previous state)
+def render_hero_card(accuracy="—"):
+    hero_placeholder.markdown(
+        f"""
+        <div class="hero-shell">
+            <div class="hero-pill">Race Replay · Telemetry</div>
+            <div>
+                <div class="hero-title">{st.session_state.get('selected_race_name', 'Race Replay')}</div>
+                <div class="hero-subtext">Session Key: {st.session_state.get('selected_session_key', '—')}</div>
+                <div class="hero-subtext">Model Accuracy: {accuracy}%</div>
+            </div>
         </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+        """,
+        unsafe_allow_html=True,
+    )
+
+# Initial render
+render_hero_card(st.session_state.get('model_accuracy', 'N/A'))
 
 if 'selected_session_key' not in st.session_state:
     st.warning("No race selected.")
@@ -176,6 +185,7 @@ if 'selected_session_key' not in st.session_state:
 
 session_key = st.session_state['selected_session_key']
 race_name = st.session_state.get('selected_race_name', 'Unknown GP')
+model_Accuracy = st.session_state.get('model_accuracy', None)
 
 # --- DATA LOADING PHASE ---
 # If data hasn't been checked yet, show spinner and hide sidebar
@@ -249,19 +259,17 @@ if not db_folder.exists():
 elif not db_file.exists():
     st.error(f"Database file not found")
     st.stop()
-else:
-    print(f"Database found")
 
 # Connect using the absolute path
 DB_URL = f"sqlite:///{db_file}"
 engine = create_engine(DB_URL)
-print(f"Connected to Database")
+#print(f"Connected to Database")
 
 current_script_dir = os.path.dirname(os.path.abspath(__file__))
 base_path = os.path.join(current_script_dir, '../../TrainingModel/models/')
 base_path = os.path.normpath(base_path) + os.sep  # Normalize to fix slashes
 
-print(f"Loading models from: {base_path}")
+#print(f"Loading models from: {base_path}")
 
 try:
     MODEL = joblib.load(base_path + 'lap_times_v1_model.joblib')
@@ -271,9 +279,9 @@ try:
         GLOBAL_METRICS = json.load(f)
 
     rf_model = MODEL
-    print("Models loaded successfully.")
+    #print("Models loaded successfully.")
 except FileNotFoundError as e:
-    print(f"ERROR: Could not find model files. Checked path: {base_path}")
+    #print(f"ERROR: Could not find model files. Checked path: {base_path}")
     raise e
     
 # ------------------ PIT LOSS MODEL ------------------ #
@@ -348,11 +356,11 @@ def get_historic_pit_loss(driver_id, session_key):
     
     if driver_losses:
         avg_loss = float(np.mean(driver_losses))
-        print(f"Driver {driver_id} Pit Loss: {avg_loss:.2f}s (Based on {len(driver_losses)} stops)")
+        #print(f"Driver {driver_id} Pit Loss: {avg_loss:.2f}s (Based on {len(driver_losses)} stops)")
         return avg_loss
     
     # --- Calculate Session Average ---
-    print(f"No valid green-flag stops for Driver {driver_id}. Calculating session average...")
+    #print(f"No valid green-flag stops for Driver {driver_id}. Calculating session average...")
     
     # We calculate losses for ALL drivers in the dataframe
     # Iterate through each unique driver number in the session df
@@ -365,11 +373,11 @@ def get_historic_pit_loss(driver_id, session_key):
         
     if all_losses:
         session_avg = float(np.mean(all_losses))
-        print(f"Session Average Pit Loss: {session_avg:.2f}s (Based on {len(all_losses)} stops)")
+        #print(f"Session Average Pit Loss: {session_avg:.2f}s (Based on {len(all_losses)} stops)")
         return session_avg
         
     # --- Calculate Default ---
-    print("Warning: Could not calculate pit loss from session data. Using default.")
+    #print("Warning: Could not calculate pit loss from session data. Using default.")
     return 22.0
     
 # ------------------ BUILD TIMELINE DATAFRAME ------------------ #
@@ -378,7 +386,7 @@ def predict_strategy_with_history(driver_id, start_lap, end_lap, pit_stop_lap, t
     stint_predictions = []
     current_tire_age = 1 
 
-    print(f"\nSimulating Stint: Laps {start_lap}-{end_lap} | Pitting on Lap {pit_stop_lap}")
+    #print(f"\nSimulating Stint: Laps {start_lap}-{end_lap} | Pitting on Lap {pit_stop_lap}")
 
     for lap_number in range(start_lap, end_lap + 1):
         
@@ -462,7 +470,7 @@ def calculate_model_accuracy(simulation_df, session_key, driver_id):
     delta = total_sim_time - total_actual_time
     #print(f"Total Sim Time: {total_sim_time:.3f}s | Total Actual Time: {total_actual_time:.3f}s | Delta: {delta:.3f}s")
     number_of_laps = len(valid_comparison) # Number of valid laps compared in the stint
-    print(f"Number of Laps Compared: {number_of_laps}")
+    #print(f"Number of Laps Compared: {number_of_laps}")
     confidence_score = max(0, 100 - mae * number_of_laps * 2)  # Simple confidence metric, scaled by 2 for severity
     
     metrics = {
@@ -754,7 +762,7 @@ def run_simulation(driver_id, session_key, start_lap, end_lap, pit_lap, historic
             raw_pace = rf_model.predict(pd.DataFrame([input_data]))[0].sum()
             base_time = raw_pace - pace_bias
             
-            print ("Base Time is:", base_time, "For Lap ", lap)
+            #print ("Base Time is:", base_time, "For Lap ", lap)
             
             # ----- APPLY PENALTIES -----
             
@@ -857,7 +865,7 @@ def calibrate_and_simulate(driver_id, session_key, start_lap, end_lap, pit_lap, 
         # Fallback if map is incomplete
         historic_compound = tire_compound
         
-    print ("Historic Compound for Calibration:", historic_compound)
+    #print ("Historic Compound for Calibration:", historic_compound)
     # Calibration Phase
     #print("PHASE 1: Calibration Run")
     control_df = run_simulation(
@@ -891,11 +899,11 @@ def calibrate_and_simulate(driver_id, session_key, start_lap, end_lap, pit_lap, 
         
         # Use MEDIAN to filter out extreme outliers (like pit stop deltas or slow laps)
         bias = merged_df['delta'].median()
-        print(f"Calibrated Bias (Median): {bias:.3f} s/lap (Sample size: {len(merged_df)} laps)")
+        #print(f"Calibrated Bias (Median): {bias:.3f} s/lap (Sample size: {len(merged_df)} laps)")
     else:
         # Fallback if data is missing
         bias = 0.0
-        print("Warning: No matching laps for bias calibration. Using 0.0.")
+        #print("Warning: No matching laps for bias calibration. Using 0.0.")
     
     # Strategy Phase
     #print(f"PHASE 2: Final Strategy (Bias: {bias:.3f})...")
@@ -1082,13 +1090,26 @@ def simulate_stint (session_id, driver_id, pit_lap, historic_pit_lap, tire_compo
     sim_df, bias_used = calibrate_and_simulate(**params)
     acc_df, metrics = calculate_model_accuracy(sim_df, params['session_key'], params['driver_id'])
 
-    print(f"Bias Applied: {bias_used:.3f} s/lap")
-    print(f"Total Delta: {metrics['Total_Delta']:.3f} s slower")
-    print(f"MAE: {metrics['MAE']:.4f} s/lap severity")
-    print(f"RMSE: {metrics['RMSE']:.4f} s/lap severity")
-    print(f"Confidence Score: {metrics['Confidence_Score']:.2f}/100")
+    #print(f"Bias Applied: {bias_used:.3f} s/lap")
+    #print(f"Total Delta: {metrics['Total_Delta']:.3f} s slower")
+    #print(f"MAE: {metrics['MAE']:.4f} s/lap severity")
+    #print(f"RMSE: {metrics['RMSE']:.4f} s/lap severity")
+    #print(f"Confidence Score: {metrics['Confidence_Score']:.2f}/100")
+    render_hero_card("Calculating...")
     
+    with st.status("Running Predictive Model...", expanded=True) as status:
+        # Perform your logic
+        # ... sim_results = your_model_function() ...
+        
+        st.write("Applying Pace Bias...")
+        st.write("Calculating Overtake Deltas...")
+        
+        # Store results
+        st.session_state['model_accuracy'] = metrics['Confidence_Score']
+        status.update(label="Simulation Complete!", state="complete")
     
+    # Final update to the card
+    render_hero_card(st.session_state['model_accuracy'])
     # Fetch Two Reference Maps
     # The Fast Map (Average Racing Lap)
     ref_racing = fetch_driver_sector_times_and_position(session_id, driver_id)
@@ -1098,7 +1119,7 @@ def simulate_stint (session_id, driver_id, pit_lap, historic_pit_lap, tire_compo
     ref_pitting = fetch_pit_lap_telemetry(session_id, driver_id, historic_pit_lap)
     
     if ref_racing.empty or ref_pitting.empty or sim_df.empty:
-        print("Error: Missing telemetry data for racing or pit reference.")
+       # print("Error: Missing telemetry data for racing or pit reference.")
         return pd.DataFrame()
 
     ghost_laps_list = []
@@ -1111,7 +1132,7 @@ def simulate_stint (session_id, driver_id, pit_lap, historic_pit_lap, tire_compo
         if lap_num == pit_lap:
             # SWITCH TO PIT MAP
             current_ref = ref_pitting
-            print(f"Swapping to Pit Lane Geometry for Lap {lap_num}")
+            #print(f"Swapping to Pit Lane Geometry for Lap {lap_num}")
         else:
             # USE RACING MAP
             current_ref = ref_racing
@@ -1429,8 +1450,8 @@ def start_simulation(session_key):
                 if ghost_lap_data.empty:
                     st.error("Simulation failed due to missing telemetry data.")
                     return
-                print (f"Generated Ghost Lap Data: {ghost_lap_data.shape[0]} rows")
-                print (ghost_lap_data.head(3))
+                #print (f"Generated Ghost Lap Data: {ghost_lap_data.shape[0]} rows")
+                #print (ghost_lap_data.head(3))
                 
                 # --------------- LAP TIME COMPARISON (RIGHT SIDE) ---------------
                 with right_col:
