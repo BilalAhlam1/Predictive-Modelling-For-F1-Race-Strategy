@@ -157,10 +157,10 @@ st.markdown(
 )
 
 # ------------------ RACE REPLAY SECTION ------------------ # 
-# 1. Setup the UI Shell
+# Setup the UI Shell
 hero_placeholder = st.empty() # This allows us to overwrite the card later
 
-# 2. Render initial state (or previous state)
+# Render initial state (or previous state)
 def render_hero_card(accuracy="—"):
     hero_placeholder.markdown(
         f"""
@@ -1098,8 +1098,6 @@ def simulate_stint (session_id, driver_id, pit_lap, historic_pit_lap, tire_compo
     render_hero_card("Calculating...")
     
     with st.status("Running Predictive Model...", expanded=True) as status:
-        # Perform your logic
-        # ... sim_results = your_model_function() ...
         
         st.write("Applying Pace Bias...")
         st.write("Calculating Overtake Deltas...")
@@ -1429,7 +1427,7 @@ def start_simulation(session_key):
             
             # Button to Run Simulation
             if st.button("Run Strategy Simulation"):  
-                print(f"Selected Driver: {selected_driver} (ID: {driver_id}) | Pit Lap: {selected_pit_lap} | Historic Pit Lap: {historic_pit_lap} | Compound: {selected_tire_compound} | Historic Compound: {historic_tire_compound}")
+                #print(f"Selected Driver: {selected_driver} (ID: {driver_id}) | Pit Lap: {selected_pit_lap} | Historic Pit Lap: {historic_pit_lap} | Compound: {selected_tire_compound} | Historic Compound: {historic_tire_compound}")
                 st.session_state['button_clicked'] = True
             else:
                 st.session_state['button_clicked'] = False
