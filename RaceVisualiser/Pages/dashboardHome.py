@@ -204,8 +204,10 @@ st.markdown(
 st.markdown(
     """
     <div class="info-banner">
-        ℹ️ This project is entirely unofficial and is not affiliated with, endorsed by, or associated in any way with Formula 1 companies,
-        the FIA, or any official Formula 1 entities. All references to F1 and related trademarks are the property of Formula One Licensing B.V.
+        ℹ️ <b>Project Disclaimer & Data Attribution:</b><br>
+        This project is entirely unofficial and is not affiliated with the FIA or official Formula 1 entities. 
+        Telemetry data is sourced from the <b>OpenF1</b> and <b>FastF1</b> APIs for academic research purposes. 
+        All trademarks are the property of their respective owners.
     </div>
     """,
     unsafe_allow_html=True,

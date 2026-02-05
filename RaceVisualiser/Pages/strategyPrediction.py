@@ -197,6 +197,35 @@ if "replay_loaded" not in st.session_state:
         """,
         unsafe_allow_html=True
     )
+    
+def show_disclaimer():
+    # Check if the user has already accepted the disclaimer in this session
+    if "disclaimer_accepted" not in st.session_state:
+        st.session_state.disclaimer_accepted = False
+
+    if not st.session_state.disclaimer_accepted:
+        # Create an overlay-style container
+        with st.container(border=True):
+            st.subheader("⚠️ Project Disclaimer & Ethical Disclosure")
+            st.markdown(
+                """
+                This prediction model is for **academic and analytical purposes only**. 
+                It utilizes historical data to simulate outcomes and has **no relation to real-life 
+                official race results** or the actual performance of Formula 1 teams.
+                
+                - Predictions are stochastic and based on machine learning.
+                - This tool is not affiliated with the FIA or Formula 1 entities.
+                - Data sourced via OpenF1 and FastF1 APIs.
+                """
+            )
+            if st.button("I Understand and Accept"):
+                st.session_state.disclaimer_accepted = True
+                st.rerun()
+        # Stop execution of the rest of the page until accepted
+        st.stop()
+
+# Run the disclaimer check at the very top of your strategyPrediction.py
+show_disclaimer()
 
 #----------------- TRACK LAYOUT ------------------#
 @st.cache_data
