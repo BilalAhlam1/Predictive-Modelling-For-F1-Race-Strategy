@@ -224,6 +224,9 @@ session_df = get_cached_races()
 if session_df.empty:
     st.error("No race data available.")
 else:
+    # --- DEBUG / CONFIRMATION --- #
+    if 'selected_session_key' in st.session_state:
+        st.success(f"**{st.session_state['selected_race_name']}** selected. Go to 'Race Replay' page to view analysis.")
     session_df['date_start'] = pd.to_datetime(session_df['date_start'])
     st.markdown(f"<div class='section-title'>{raceData.get_season_year()} Race Calendar</div>", unsafe_allow_html=True)
     session_df = session_df.sort_values(by='date_start', ascending=False) # Most recent first
@@ -268,7 +271,3 @@ else:
                     st.rerun()
                 
                 st.markdown("</div>", unsafe_allow_html=True)
-
-# --- DEBUG / CONFIRMATION --- #
-if 'selected_session_key' in st.session_state:
-    st.success(f"**{st.session_state['selected_race_name']}** selected. Go to 'Race Replay' page to view analysis.")
