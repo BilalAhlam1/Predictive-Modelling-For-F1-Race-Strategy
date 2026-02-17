@@ -1,9 +1,39 @@
+import subprocess
 import streamlit as st
 import time
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'DataCollection')))
 import storeRaceData as raceData
+
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DB_PATH = os.path.join(BASE_DIR, "DatabaseConnection", "f1_strategy.db")
+INIT_SCRIPT = os.path.join(BASE_DIR, "DatabaseConnection", "createDatabase.py")
+
+def initialize_database():
+    """Checks for the local SQLite database and runs initialization if missing[cite: 3679, 4617]."""
+    if not os.path.exists(DB_PATH):
+        st.warning("Local telemetry database not found. Initializing storage... [cite: 3647]")
+        try:
+            # Execute the creation script using the current Python interpreter
+            with st.spinner("Fetching historical F1 data and building local cache... [cite: 3625, 3811]"):
+                result = subprocess.run(
+                    [sys.executable, INIT_SCRIPT],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    cwd=os.path.dirname(INIT_SCRIPT) # Run in its own directory to maintain relative paths
+                )
+            st.success("Database 'f1_strategy.db' created successfully! [cite: 3698]")
+        except subprocess.CalledProcessError as e:
+            st.error(f"Critical error during database initialization: {e.stderr}")
+            st.stop()
+    else:
+        # Optional: Log that the system is using the cached local database
+        pass
+
+# Run the check before loading the rest of the dashboard
+initialize_database()
 
 # --- PAGE CONFIG --- #
 st.set_page_config(layout="wide", page_title="F1 Strategy Dashboard")
