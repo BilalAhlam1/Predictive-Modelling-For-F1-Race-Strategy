@@ -1,6 +1,18 @@
-streamlit
-pandas
-numpy
-plotly
-requests
-sqlalchemy
+# Core Frameworks
+streamlit            # Web dashboard and simulation interface
+pandas               # High-dimensional telemetry data processing
+numpy                # Numerical computations and coordinate interpolation
+
+# Machine Learning
+scikit-learn         # Random Forest and Linear Regression models
+joblib               # Serializing and loading trained models
+
+# Data Acquisition & Management
+requests             # HTTP library for OpenF1 API interaction
+aiohttp              # Async HTTP client for OpenF1 API interaction
+sqlalchemy           # SQL toolkit for local SQLite database management
+
+# Visualization
+plotly               # Dynamic analytical charts and 2D track maps
+matplotlib           # Static visualizations and debugging plots
+scipy                # Advanced interpolation (Akima method)

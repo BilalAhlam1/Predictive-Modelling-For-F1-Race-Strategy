@@ -72,3 +72,25 @@ The project integrates open-source F1 telemetry APIs to provide data-driven race
 ```bash
 git clone https://github.com/BilalAhlam1/Predictive-Modelling-For-F1-Race-Strategy.git
 cd Predictive-Modelling-For-F1-Race-Strategy
+
+### 2. Install Dependencies
+# Create a virtual environment
+python -m venv venv
+
+# Activate it
+# On Windows:
+venv\Scripts\activate
+# On macOS/Linux:
+source venv/bin/activate
+
+# Install required packages
+pip install -r requirements.txt
+
+### 3. Initialise local database
+cd DatabaseConnection/
+python createDatabase.py
+cd ..
+
+### 4. Launch Streamlit App
+cd RaceVisualiser/
+streamlit run app.py
