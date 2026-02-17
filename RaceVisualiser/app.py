@@ -11,12 +11,13 @@ DB_PATH = os.path.join(BASE_DIR, "DatabaseConnection", "f1_strategy.db")
 INIT_SCRIPT = os.path.join(BASE_DIR, "DatabaseConnection", "createDatabase.py")
 
 def initialize_database():
-    """Checks for the local SQLite database and runs initialization if missing[cite: 3679, 4617]."""
+    """Checks for the local SQLite database and runs initialization if missing."""
     if not os.path.exists(DB_PATH):
-        st.warning("Local telemetry database not found. Initializing storage... [cite: 3647]")
+        st.warning("Local telemetry database not found. Initializing storage...")
+        print("Database not found. Running initialization script...")
         try:
             # Execute the creation script using the current Python interpreter
-            with st.spinner("Fetching historical F1 data and building local cache... [cite: 3625, 3811]"):
+            with st.spinner("Fetching historical F1 data and building local cache..."):
                 result = subprocess.run(
                     [sys.executable, INIT_SCRIPT],
                     capture_output=True,
@@ -24,12 +25,12 @@ def initialize_database():
                     check=True,
                     cwd=os.path.dirname(INIT_SCRIPT) # Run in its own directory to maintain relative paths
                 )
-            st.success("Database 'f1_strategy.db' created successfully! [cite: 3698]")
+            st.success("Database 'f1_strategy.db' created successfully!")
         except subprocess.CalledProcessError as e:
             st.error(f"Critical error during database initialization: {e.stderr}")
             st.stop()
     else:
-        # Optional: Log that the system is using the cached local database
+        print("Database already exists. Skipping initialization.")
         pass
 
 # Run the check before loading the rest of the dashboard

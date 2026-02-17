@@ -269,6 +269,31 @@ current_script_dir = os.path.dirname(os.path.abspath(__file__))
 base_path = os.path.join(current_script_dir, '../../TrainingModel/models/')
 base_path = os.path.normpath(base_path) + os.sep  # Normalize to fix slashes
 
+# --- Streamlit Universal Pathing ---
+current_file = Path(__file__).resolve()
+repo_root = current_file.parent
+
+# Walk up the folders until we find the one containing 'DatabaseConnection'
+# This handles cases where you run from different subdirectories
+while repo_root.parent != repo_root:
+    if (repo_root / "DatabaseConnection").exists():
+        break
+    repo_root = repo_root.parent
+
+# Now define the DB file relative to that root
+db_file = repo_root / 'DatabaseConnection' / 'f1_strategy.db'
+
+# Debug check
+if not db_file.exists():
+    st.error(f"Database not found. Expected path: {db_file}")
+    
+    init_script = repo_root / "DatabaseConnection" / "createDatabase.py"
+    if init_script.exists():
+        st.info("Run 'python DatabaseConnection/createDatabase.py' to initialize the data.")
+    st.stop()
+
+DB_URL = f"sqlite:///{db_file}"
+engine = create_engine(DB_URL)
 #print(f"Loading models from: {base_path}")
 
 try:
