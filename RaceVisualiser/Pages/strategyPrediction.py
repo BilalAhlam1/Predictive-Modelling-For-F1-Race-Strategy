@@ -1264,7 +1264,7 @@ def start_simulation(session_key):
                         template="plotly_white",
                         height=400
                     )
-                    st.plotly_chart(lap_fig, use_container_width=True)
+                    st.plotly_chart(lap_fig, width='stretch')
                     
                 st.markdown("<div style='margin-top:24px;'></div>", unsafe_allow_html=True)
                 left_col, right_col = st.columns([0.5, 0.5])
@@ -1456,7 +1456,7 @@ def start_simulation(session_key):
 
                     if replay_fig:
                         st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
-                        st.plotly_chart(st.session_state[replay_fig_key], use_container_width=True, config={"displayModeBar": False})
+                        st.plotly_chart(st.session_state[replay_fig_key], width='stretch', config={"displayModeBar": False})
                         st.markdown("</div>", unsafe_allow_html=True)
                         
                 with right_col:
@@ -1521,7 +1521,7 @@ def start_simulation(session_key):
                             height=400,
                             showlegend=True
                         )
-                        st.plotly_chart(pos_fig, use_container_width=True)
+                        st.plotly_chart(pos_fig, width='stretch')
                     else:
                         st.info("Not enough data to calculate position history.")
 
