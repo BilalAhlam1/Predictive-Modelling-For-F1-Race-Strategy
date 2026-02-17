@@ -3,55 +3,50 @@ import streamlit as st
 import time
 import sys
 import os
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'DataCollection')))
 import storeRaceData as raceData
 
+# --- DATABASE INITIALIZATION ---
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.path.join(BASE_DIR, "DatabaseConnection", "f1_strategy.db")
 INIT_SCRIPT = os.path.join(BASE_DIR, "DatabaseConnection", "createDatabase.py")
 
 def initialize_database():
-    """Checks for the local SQLite database and runs initialization if missing."""
+    """
+    Checks if the local SQLite database exists.
+    If not, runs the initialization script to create tables and populate with historical F1 data.
+    """
     if not os.path.exists(DB_PATH):
-        st.warning("Local telemetry database not found. Initializing storage...")
-        print("Database not found. Running initialization script...")
+        st.warning("Database not found. Initializing local storage...")
         try:
-            # Execute the creation script using the current Python interpreter
             with st.spinner("Fetching historical F1 data and building local cache..."):
-                result = subprocess.run(
+                subprocess.run(
                     [sys.executable, INIT_SCRIPT],
                     capture_output=True,
                     text=True,
                     check=True,
-                    cwd=os.path.dirname(INIT_SCRIPT) # Run in its own directory to maintain relative paths
+                    cwd=os.path.dirname(INIT_SCRIPT)
                 )
-            st.success("Database 'f1_strategy.db' created successfully!")
+            st.success("Database initialized successfully!")
         except subprocess.CalledProcessError as e:
-            st.error(f"Critical error during database initialization: {e.stderr}")
+            st.error(f"Database initialization failed: {e.stderr}")
             st.stop()
-    else:
-        print("Database already exists. Skipping initialization.")
-        pass
 
-# Run the check before loading the rest of the dashboard
 initialize_database()
 
-# --- PAGE CONFIG --- #
+# --- PAGE CONFIGURATION ---
 st.set_page_config(layout="wide", page_title="F1 Strategy Dashboard")
 
-# --- DATA LOADING PHASE --- #
-# If data hasn't been checked yet, show spinner and hide sidebar
+# --- INITIAL DATA LOADING ---
+# On first load, fetch the latest race data and hide UI elements during loading
 if "data_loaded" not in st.session_state:
-    
-    # Hide Sidebar, Header, and Center the Spinner
     st.markdown(
         """
         <style>
             [data-testid="stSidebar"] {display: none;}
             [data-testid="stHeader"] {visibility: hidden;}
             [data-testid="collapsedControl"] {display: none;}
-            
-            /* Center the spinner vertically and horizontally */
             .stSpinner {
                 position: fixed;
                 top: 50%;
@@ -64,32 +59,29 @@ if "data_loaded" not in st.session_state:
         unsafe_allow_html=True
     )
 
-    with st.spinner('Initializing Dashboard & Syncing Races...'):
-        # This function should returns True if successful
-        fetched = raceData.update_last_five_sessions()
+    with st.spinner('Initializing Dashboard & Syncing Latest Races...'):
+        data_fetch_success = raceData.update_last_five_sessions()
     
-    if not fetched:
-        st.error("Failed to load races. There may be a live race in progress. Please try again later.") #API limitation issue
+    if not data_fetch_success:
+        st.error("Failed to load race data. A live race may be in progress. Please try again later.")
         st.stop()
-    else:
-        st.session_state["data_loaded"] = True
-        time.sleep(0.5) 
-        st.rerun() # Reload to show the Navigation Bar
+    
+    st.session_state["data_loaded"] = True
+    time.sleep(0.5)
+    st.rerun()
 
-# --- NAVIGATION PHASE --- #
-# This only runs after data is loaded and sidebar is allowed to show
-
-# Define the pages
+# --- NAVIGATION ---
+# Define dashboard pages
 home_page = st.Page("Pages/dashboardHome.py", title="Home", icon="🏠", default=True)
 replay_page = st.Page("Pages/raceReplay.py", title="Race Replay", icon="🏎️")
-prediction_strategy_page = st.Page("Pages/strategyPrediction.py", title="Strategy Prediction", icon="📊")
+prediction_page = st.Page("Pages/strategyPrediction.py", title="Strategy Prediction", icon="📊")
 
-# Create the Navigation Object
+# Create navigation menu
 pg = st.navigation({
     "Dashboard": [home_page],
     "Analysis": [replay_page],
-    "Prediction Model": [prediction_strategy_page]
+    "Prediction Model": [prediction_page]
 })
 
-# Run the selected page
+# Render the selected page
 pg.run()

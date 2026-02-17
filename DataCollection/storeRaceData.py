@@ -8,87 +8,96 @@ from datetime import timedelta
 import random
 import math
 import openf1_helper as of1
-import sys, os; sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'DatabaseConnection')))
-import databaseManager as db
-import matplotlib.pyplot as plt
-api = of1.api
+import sys
 from pathlib import Path
 
-# 1. Get the absolute path of the current file (app.py)
-current_file = Path(__file__).resolve()
-
-# 2. Get the folder where this file lives (RaceVisualiser)
-current_dir = current_file.parent
-
-# 3. Get the Project Root (One level up from RaceVisualiser)
-project_root = current_dir.parent
-
-# 4. Add the DatabaseConnection folder to sys.path
-db_path = os.path.join(project_root, 'DatabaseConnection')
-if db_path not in sys.path:
-    sys.path.append(db_path)
-
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'DatabaseConnection')))
 import databaseManager as db
+import matplotlib.pyplot as plt
 
-# ---------------------------
-# Async HTTP request helper with retries increased to 5
-# ---------------------------
+api = of1.api
+SESSION_KEY = None
+
+# --- ASYNC HTTP REQUEST HELPER ---
 async def fetch(session, url, params, max_retries=5):
-    """Fetch data with retries on 429 errors."""
+    """
+    Fetches data from API with exponential backoff retry logic.
+    
+    Implements rate limit handling (429) and server error recovery.
+    
+    Args:
+        session (aiohttp.ClientSession): Active HTTP session.
+        url (str): API endpoint URL.
+        params (dict): Query parameters.
+        max_retries (int): Maximum retry attempts. Default: 5.
+        
+    Returns:
+        list: JSON response data, or empty list if all retries fail.
+    """
     for attempt in range(max_retries):
         try:
-            timeout = aiohttp.ClientTimeout(total=60)  # 60 seconds timeout
-            # Make the request with aiohttp session to return JSON data asynchronously
-            async with session.get(url, params=params) as response:
+            timeout = aiohttp.ClientTimeout(total=60)
+            async with session.get(url, params=params, timeout=timeout) as response:
                 if response.status == 429:
-                    wait = (2 ** attempt) + random.uniform(2, 4) # Exponential backoff with jitter increased to 2-4 seconds
-                    print(f"429 Too Many Requests. Retrying in {wait:.1f}s")
+                    wait = (2 ** attempt) + random.uniform(2, 4)
                     await asyncio.sleep(wait)
                     continue
                 if response.status >= 500:
-                    # Server error, wait and retry with increased delay
                     wait = 5
-                    print(f"Server error {response.status}. Retrying in {wait}s...")
                     await asyncio.sleep(wait)
                     continue
                     
                 response.raise_for_status()
-                data = await response.json()
-                return data
+                return await response.json()
         except aiohttp.ClientError as e:
-            wait = (2 ** attempt) + random.uniform(1,2)
-            print(f"HTTP error {e}. Retry in {wait:.1f}s")
+            wait = (2 ** attempt) + random.uniform(1, 2)
             await asyncio.sleep(wait)
-    print(f"Failed after {max_retries} retries for {params}")
+    
     return []
 
-# ---------------------------
-# Fetch drivers for the session
-# ---------------------------
+# --- DRIVER & LAP DATA FETCHING ---
 async def get_drivers():
-    """Get list of drivers for the session as (acronym, number) tuples."""
+    """
+    Fetches all drivers for the session.
+    
+    Returns:
+        list: List of tuples (driver_acronym, driver_number).
+    """
     df = api.get_dataframe('drivers', {'session_key': SESSION_KEY})
     if df.empty:
-        #print("No drivers found for this session.")
         return []
     return [(row['name_acronym'], row['driver_number']) for _, row in df.iterrows()]
 
-# ---------------------------
-# Fetch laps for a driver
-# ---------------------------
 async def get_laps(driver_number):
-    """Get laps for a specific driver."""
+    """
+    Fetches lap data for a specific driver in chronological order.
+    
+    Args:
+        driver_number (int): Driver ID.
+        
+    Returns:
+        list: List of lap records sorted by date.
+    """
     laps_df = api.get_dataframe('laps', {'session_key': SESSION_KEY, 'driver_number': driver_number})
     if laps_df.empty:
         return []
-    laps_df = laps_df.sort_values('date_start') # Ensure laps are in chronological order
+    laps_df = laps_df.sort_values('date_start')
     return laps_df.to_dict('records')
 
-# ---------------------------
-# Fetch locations helper for a time range
-# ---------------------------
+# --- LOCATION DATA FETCHING ---
 async def get_locations(session, driver_number, start_iso, end_iso):
-    """Fetch location data for a driver within a time range."""
+    """
+    Fetches GPS location data for a driver within a time range.
+    
+    Args:
+        session (aiohttp.ClientSession): Active HTTP session.
+        driver_number (int): Driver ID.
+        start_iso (str): ISO 8601 start timestamp.
+        end_iso (str): ISO 8601 end timestamp.
+        
+    Returns:
+        list: Location records with x, y, z coordinates.
+    """
     params = {
         'session_key': SESSION_KEY,
         'driver_number': driver_number,
@@ -98,25 +107,31 @@ async def get_locations(session, driver_number, start_iso, end_iso):
     url = "https://api.openf1.org/v1/location"
     return await fetch(session, url, params)
 
-# ---------------------------
-# Process a single driver with batch requests
-# ---------------------------
 async def process_driver(driver_tuple, semaphore):
-    """Process a single driver to fetch lap locations."""
+    """
+    Fetches lap locations for a single driver with rate limiting.
+    
+    Splits data collection into 30-minute chunks to avoid API overload.
+    Assigns GPS coordinates to their corresponding lap numbers.
+    
+    Args:
+        driver_tuple (tuple): (driver_acronym, driver_number).
+        semaphore (asyncio.Semaphore): Controls concurrent requests.
+        
+    Returns:
+        list: Telemetry records for the driver.
+    """
     acronym, driver_number = driver_tuple
-    print(f"Processing driver {acronym} ({driver_number})")
     records = []
 
     laps = await get_laps(driver_number)
     if not laps:
         return records
 
-    # Filter out laps without start time to avoid issues to avoid DNF laps
     laps = [lap for lap in laps if lap.get('date_start')]
     if not laps:
         return records
     
-    # Determine full time range to fetch in chunks
     last_lap_duration = laps[-1].get('lap_duration')
     if last_lap_duration is None or (isinstance(last_lap_duration, float) and math.isnan(last_lap_duration)):
         last_lap_duration = 0.0
@@ -124,8 +139,6 @@ async def process_driver(driver_tuple, semaphore):
     start_time = pd.to_datetime(laps[0]['date_start'])
     end_time = pd.to_datetime(laps[-1]['date_start']) + timedelta(seconds=last_lap_duration)
 
-    # chunking logic
-    # Split the total time into 30-minute chunks to avoid overloading the API
     chunk_size = timedelta(minutes=30)
     current_start = start_time
     all_locs = []
@@ -135,7 +148,6 @@ async def process_driver(driver_tuple, semaphore):
             while current_start < end_time:
                 current_end = min(current_start + chunk_size, end_time)
                 
-                # Fetch chunk
                 chunk_data = await get_locations(
                     session, 
                     driver_number, 
@@ -144,26 +156,16 @@ async def process_driver(driver_tuple, semaphore):
                 )
                 all_locs.extend(chunk_data)
                 
-                # Move to next chunk
                 current_start = current_end
-                
-                # Small polite delay between chunks for the same driver to prevent rate limiting
-                await asyncio.sleep(0.5) 
+                await asyncio.sleep(0.5)
 
-    # If no locations found after all chunks, return empty
     if not all_locs:
-        print(f"Warning: No locations found for {acronym}")
         return records
 
-    # Assign locations back to individual laps
     locs_df = pd.DataFrame(all_locs)
-    
-    # Drop duplicates that might occur at chunk boundaries
     locs_df = locs_df.drop_duplicates(subset=['date'])
-    
-    locs_df['date'] = pd.to_datetime(locs_df['date'], format = 'ISO8601', errors='coerce')
+    locs_df['date'] = pd.to_datetime(locs_df['date'], format='ISO8601', errors='coerce')
 
-    # Optimized: Vectorized lookup or standard iteration (Standard is fine for this volume)
     for lap in laps:
         lap_start = pd.to_datetime(lap['date_start'])
         lap_duration = lap.get('lap_duration')
@@ -171,7 +173,6 @@ async def process_driver(driver_tuple, semaphore):
             lap_duration = 0.0
         lap_end = lap_start + timedelta(seconds=lap_duration)
 
-        # Filter locations for this lap
         mask = (locs_df['date'] >= lap_start) & (locs_df['date'] < lap_end)
         lap_locs = locs_df[mask]
         
@@ -188,191 +189,157 @@ async def process_driver(driver_tuple, semaphore):
                 'z': loc['z']
             })
 
-    print(f"Finished driver {acronym} ({len(records)} locations)")
     return records
 
-# ---------------------------
-# async runner
-# ---------------------------
+# --- ASYNC DATA COLLECTION ---
 async def fetchWithAPI():
-    drivers = await get_drivers() # List of (acronym, number)
+    """
+    Main async pipeline: fetches drivers, then processes each driver concurrently.
+    
+    Returns:
+        pd.DataFrame: Combined telemetry data (location, timestamp, lap info).
+    """
+    drivers = await get_drivers()
     all_records = []
 
-    #semaphore is a library to limit concurrent requests
-    semaphore = asyncio.Semaphore(2)  # max 2 concurrent requests to reduce 429s
-
-    # Create tasks for each driver and gather results asynchronously
+    semaphore = asyncio.Semaphore(2)
     tasks = [process_driver(d, semaphore) for d in drivers]
     for future in asyncio.as_completed(tasks):
         result = await future
         all_records.extend(result)
 
     if not all_records:
-        print("No location data collected.")
-        return
+        return None
 
     df = pd.DataFrame(all_records)
-    df['timestamp'] = pd.to_datetime(df['timestamp'], format = 'ISO8601', errors='coerce')
+    df['timestamp'] = pd.to_datetime(df['timestamp'], format='ISO8601', errors='coerce')
     df = df.sort_values('timestamp')
     
     return df
 
-# ---------------------------
-# fetch from DB
-# ---------------------------
+# --- DATABASE OPERATIONS ---
 def fetchFromDB(session_key):
-    """Fetch session data directly from the database."""
-    df = db.load_from_db(f"""SELECT * FROM race_telemetry WHERE session_key = {session_key}""")
-    return df
+    """
+    Fetches telemetry data from local database.
+    
+    Args:
+        session_key (int): Session identifier.
+        
+    Returns:
+        pd.DataFrame: Telemetry data for the session.
+    """
+    return db.load_from_db(f"SELECT * FROM race_telemetry WHERE session_key = {session_key}")
 
-# ---------------------------
-# update and store to DB
-# ---------------------------
 def updateDB():
     """
-    Checks DB for data, fetches from API if missing.
-    Returns True if successful, False if failed.
+    Checks if session data exists in database. Fetches from API if missing.
+    
+    Returns:
+        bool: True if data is available (cached or fetched), False otherwise.
     """
     try:
-        # Check if session data already exists in DB
-        Sessions = db.load_from_db(f"SELECT * FROM race_telemetry WHERE session_key = {SESSION_KEY}")
+        existing = db.load_from_db(f"SELECT * FROM race_telemetry WHERE session_key = {SESSION_KEY}")
         
-        if Sessions.empty:
-            print(f"Session {SESSION_KEY} not found in database. Fetching...")
-            try:
-                df = asyncio.run(fetchWithAPI())
-            except Exception as e:
-                print(f"Error running async fetch: {e}")
-                return False
+        if not existing.empty:
+            return True
 
-            # Check if API actually returned data
-            if df is None or df.empty:
-                print(f"API returned no data for session {SESSION_KEY}.")
-                return False
+        df = asyncio.run(fetchWithAPI())
+        
+        if df is None or df.empty:
+            return False
 
-            try:
-                db.save_to_db(df, 'race_telemetry', if_exists='append')
-                print(f"Successfully saved session {SESSION_KEY} to database.")
-                return True
-            except Exception as e:
-                print(f"Error saving to database: {e}")
-                return False
-        else:
-            print(f"Session {SESSION_KEY} found in database.")
-            return True # Data exists, so this is a success
-
+        db.save_to_db(df, 'race_telemetry', if_exists='append')
+        return True
+            
     except Exception as e:
-        print(f"Unexpected error in updateDB for session {SESSION_KEY}: {e}")
         return False
 
-
-# ---------------------------
-# check connection and store
-# ---------------------------
 def check_and_update_DB(session_key):
     """
-    Sets global session key and attempts update.
-    Returns True if successful, False otherwise.
+    Sets session context and updates database.
+    
+    Args:
+        session_key (int): Session identifier.
+        
+    Returns:
+        bool: True if data is available, False otherwise.
     """
     global SESSION_KEY
     SESSION_KEY = session_key
     
-    if db.test_db_connection():
-        print("Database connection successful.")
-        # Return the result of the update operation
-        if updateDB():
-            print(f"Data ready for session {SESSION_KEY}.")
-            return True
-        else:
-            print(f"Failed to update/verify data for session {SESSION_KEY}.")
-            return False
-    else: 
-        print("Database connection failed. Falling back to API fetch.")
-        # If DB is down, we return False as we can't "update" the DB
+    if not db.test_db_connection():
         return False
+    
+    return updateDB()
 
-# ---------------------------
-# get season year
-# ---------------------------
+# --- SEASON & SESSION HANDLING ---
 def get_season_year(today=None, season_start_month=3):
     """
-    Return the season year to query.
-    If the current month is before the season_start_month, return previous year.
-    Default assumes season starts in March so Jan/Feb use previous year.
+    Returns the current F1 season year. Assumes season starts in March.
+    
+    For dates before March, returns the previous calendar year.
+    
+    Args:
+        today (datetime, optional): Reference date. Defaults to current UTC time.
+        season_start_month (int): Month when season starts. Default: 3 (March).
+        
+    Returns:
+        int: Season year.
     """
     if today is None:
         today = datetime.datetime.now(datetime.timezone.utc)
     return today.year if today.month >= season_start_month else today.year - 1
 
-# ---------------------------
-# Update last five sessions and store if not present
-# ---------------------------
 def update_last_five_sessions():
     """
-    Fetch the last five session keys and update DB.
-    Returns True only if ALL 5 sessions are successfully processed/verified.
+    Fetches and stores the last 5 completed race sessions from the API.
+    Automatically removes telemetry for older sessions to keep database lean.
+    
+    Returns:
+        bool: True if all 5 sessions processed successfully, False otherwise.
     """
     try:
         sessions_df = api.get_dataframe('sessions', {
-            'year': get_season_year(), # current year based on season
+            'year': get_season_year(),
             'session_type': 'Race'
         })
-    except Exception as e:
-        print(f"Error fetching session list: {e}")
+    except Exception:
         return False
 
     if sessions_df.empty:
-        print("No sessions found.")
         return False
 
     sessions_df = sessions_df.sort_values('date_start')
     recent_sessions = sessions_df.tail(5)
     
     all_success = True
-
     for _, session in recent_sessions.iterrows():
-        # returns True/False based on success
-        result = check_and_update_DB(session['session_key'])
-        if not result:
+        if not check_and_update_DB(session['session_key']):
             all_success = False
-            print(f"Issue processing session {session['session_key']}")
 
-    #remove all sessions not in recent five from the database
-    # UPDATE: Handle edge cases for NOT IN clause with fewer than 5 sessions
     recent_keys = sessions_df['session_key'].tail(5).tolist()
     try:
-        if len(recent_keys) == 0:
-            # Danger: If list is empty, NOT IN () is invalid SQL
-            print("No recent keys provided. Skipping delete to prevent error.")
-        elif len(recent_keys) == 1:
-            # Handle single item (remove trailing comma)
+        if len(recent_keys) == 1:
             keys_str = f"({recent_keys[0]})"
-            query = f"DELETE FROM race_telemetry WHERE session_key NOT IN {keys_str}"
-            db.execute_query(query)
-        else:
-            # Handle multiple items
-            query = f"DELETE FROM race_telemetry WHERE session_key NOT IN {tuple(recent_keys)}"
-            db.execute_query(query)
-    except Exception as e:
-        print(f"Error cleaning up old sessions: {e}")
+            db.execute_query(f"DELETE FROM race_telemetry WHERE session_key NOT IN {keys_str}")
+        elif len(recent_keys) > 1:
+            db.execute_query(f"DELETE FROM race_telemetry WHERE session_key NOT IN {tuple(recent_keys)}")
+    except Exception:
         all_success = False
 
     return all_success
 
 def tableOfRaces():
     """
-    Robustly fetches the last 5 completed races with valid data.
-    Iterates backwards from the current year until it finds data (e.g., hits 2024).
-    """
-    import datetime
+    Fetches the last 5 completed races from the current or previous seasons.
+    Searches backwards up to 3 years to ensure data availability.
     
-    # Start from the current system year
+    Returns:
+        pd.DataFrame: Recent race session data.
+    """
     current_year = datetime.datetime.now().year
     
-    # Look back up to 3 years for completed races
     for year in range(current_year, current_year - 3, -1):
-        print(f"Checking for race data in {year}...")
-        
         try:
             sessions_df = api.get_dataframe('sessions', {
                 'year': year,
@@ -380,39 +347,32 @@ def tableOfRaces():
             })
             
             if not sessions_df.empty:
-                # We add a buffer of 24 hours to ensure data has been processed
                 today = datetime.datetime.now().isoformat()
                 completed_races = sessions_df[sessions_df['date_start'] < today].copy()
                 
                 if not completed_races.empty:
-                    # Sort by date and get the last 5
                     completed_races = completed_races.sort_values('date_start', ascending=True)
-                    recent_sessions = completed_races.tail(5)
-                    
-                    print(f"Found {len(recent_sessions)} completed races in {year}.")
-                    print("Recent F1 Races:")
-                    print("=" * 60)
-                    for _, session in recent_sessions.iterrows():
-                        print(f"{session['country_name']} GP - {session['location']} (Key: {session['session_key']})")
-                    
-                    return recent_sessions
-        except Exception as e:
-            print(f"Error fetching {year}: {e}")
+                    return completed_races.tail(5)
+        except Exception:
             continue
 
-    print("No completed race data found in the last 3 years.")
     return pd.DataFrame()
 
+# --- TRACK LAYOUT & VISUALIZATION ---
 def get_track_layout(session_key):
     """
-    Fetches x, y coordinates for the entire race of the driver with the most laps.
-    This ensures we capture the Pit Lane (In/Out laps) as well as the main track.
+    Fetches track coordinates from the driver who completed the most laps.
+    Ensures pit lane geometry is included alongside the main track.
+    
+    Args:
+        session_key (int): Session identifier.
+        
+    Returns:
+        pd.DataFrame: X, Y coordinates of the complete track layout.
     """
     if not db.test_db_connection():
         return pd.DataFrame()
 
-    # Find the driver who completed the MOST laps
-    # We assume the driver with the most laps likely pitted and finished the race.
     driver_query = f"""
     SELECT driver_number 
     FROM race_telemetry 
@@ -424,12 +384,10 @@ def get_track_layout(session_key):
     driver_df = db.load_from_db(driver_query)
     
     if driver_df.empty:
-        return None
+        return pd.DataFrame()
 
     target_driver = driver_df.iloc[0]['driver_number']
 
-    # Get X, Y coordinates for ALL laps for that driver
-    # We order by timestamp to ensure the line draws sequentially without jumping
     track_query = f"""
     SELECT x, y 
     FROM race_telemetry 
@@ -438,11 +396,8 @@ def get_track_layout(session_key):
     ORDER BY timestamp ASC
     """
     
-    # Load Data
     track_df = db.load_from_db(track_query)
     
- 
-    # Limit to 10,000 points for performance via downsampling if necessary
     if len(track_df) > 10000:
         track_df = track_df.iloc[::5, :]
         
@@ -450,41 +405,46 @@ def get_track_layout(session_key):
 
 def plot_track_map(track_df):
     """
-    Generates a minimalist, low-profile Matplotlib figure of the track.
+    Generates a minimalist track visualization for dashboard display.
+    
+    Args:
+        track_df (pd.DataFrame): Track coordinates.
+        
+    Returns:
+        matplotlib.figure.Figure: Track map figure with no axes or borders.
     """
     if track_df is None or track_df.empty:
         return None
         
-    # prevents the map from pushing the card content down.
     fig, ax = plt.subplots(figsize=(4, 1.5), dpi=100)
     
-    # Plot the line
     ax.plot(track_df['x'], track_df['y'], color='#FF1801', linewidth=2)
     
-    # Remove all axes, borders, and whitespace
     ax.axis('off')
-    ax.set_aspect('equal', 'datalim') # Keeps track proportions correct
+    ax.set_aspect('equal', 'datalim')
     
-    # Remove all margins so the track touches the edges of the image
     fig.subplots_adjust(left=0, right=1, bottom=0, top=1)
-    
-    # Transparent background
-    fig.patch.set_alpha(0) 
+    fig.patch.set_alpha(0)
     
     return fig
 
-
-# ---------------------------
-# Get race replay data
-# ---------------------------
+# --- RACE REPLAY DATA ---
 def get_race_replay_data(session_key):
     """
-    Fetches data and aligns drivers to the nearest second.
+    Prepares telemetry data for animated race replay.
+    
+    Resamples driver positions to 1-second intervals and calculates correct lap times
+    from lap start transitions. Filters out data from lap 1 (formation lap).
+    
+    Args:
+        session_key (int): Session identifier.
+        
+    Returns:
+        tuple: (resampled_positions_df, lap_times_df)
     """
     if not db.test_db_connection():
         return pd.DataFrame(), pd.DataFrame()
 
-    # Fetch Raw Data
     query = f"""
     SELECT 
         driver_number,
@@ -503,29 +463,20 @@ def get_race_replay_data(session_key):
     df = db.load_from_db(query)
     
     if df.empty:
-        return df
+        return df, pd.DataFrame()
 
-    # Convert Timestamp to correct format for graphing
     df['timestamp'] = pd.to_datetime(df['timestamp'], format='ISO8601', errors='coerce')
     df = df.dropna(subset=['timestamp'])
 
-    # --- Accurate lap times ---
-    # Determine start time of each lap per driver using the original timestamps
     lap_start_times = df.groupby(['driver_acronym', 'lap_number'])['timestamp'].min().reset_index()
     lap_start_times.rename(columns={'timestamp': 'lap_start_time'}, inplace=True)
     laps_sorted = lap_start_times.sort_values(['driver_acronym', 'lap_number'])
-    # Lap time = start time of next lap - start time of this lap
     laps_sorted['lap_time'] = laps_sorted.groupby('driver_acronym')['lap_start_time'].diff().shift(-1)
-    # Convert to seconds and drop rows that have NaT (last lap) so we don't have incomplete lap times
     laps_sorted['lap_time'] = laps_sorted['lap_time'].dt.total_seconds()
     lap_times_df = laps_sorted.dropna(subset=['lap_time'])[['driver_acronym', 'lap_number', 'lap_time']]
 
-    # Round timestamps to the nearest second for better track drawing sync
-    # This forces NOR with ..32.722 and VER with ..32.850 both into "17:04:33" which is close enough for visual purposes
     df['timestamp_bucket'] = df['timestamp'].dt.round('1s')
 
-    # Group by Driver + Time Bucket
-    # We average X/Y just in case a driver has 2 points in the same second due to high sampling rate
     df_resampled = (
         df.groupby(['driver_acronym', 'driver_number', 'timestamp_bucket'])
         [['x', 'y', 'lap_duration', 'lap_number']]
@@ -533,81 +484,63 @@ def get_race_replay_data(session_key):
         .reset_index()
     )
 
-    # Create Race Time Integer seconds for the Laps Slider which will be converted to min:sec and/or laps later
     start_time = df_resampled['timestamp_bucket'].min()
     df_resampled['race_time'] = (df_resampled['timestamp_bucket'] - start_time).dt.total_seconds().astype(int)
 
-    # Format & Return
-    # Rename bucket back to timestamp for clarity
     df_resampled.rename(columns={'timestamp_bucket': 'timestamp'}, inplace=True)
     
-    # Ensure integers for clean display
     df_resampled['lap_number'] = df_resampled['lap_number'].astype(int)
     df_resampled['driver_number'] = df_resampled['driver_number'].astype(int)
-    #print(lap_times_df)
+    
     return df_resampled, lap_times_df
 
-# ---------------------------
-# Get driver details
-# ---------------------------
+# --- DRIVER METADATA ---
 def get_driver_colors(session_key):
     """
-    Fetches driver colors using the specific API method requested.
-    Includes edge case handling if API is unavailable.
+    Fetches team colors and team names for all drivers in the session.
+    
+    Args:
+        session_key (int): Session identifier.
+        
+    Returns:
+        pd.DataFrame: Driver acronyms, team colors, and team names.
     """
-    default_color = "#FF1508" # Standard Formula 1 Red as fallback
+    default_color = "#FF1508"
     
     try:
-        # Try to fetch data
         drivers = api.get_dataframe('drivers', {'session_key': session_key})
         
-        # Check if data is valid
         if drivers.empty:
-            return pd.DataFrame(columns=['driver_acronym', 'team_colour'])
+            return pd.DataFrame(columns=['driver_acronym', 'team_colour', 'team_name'])
 
-        # Process Colors
         drivers['team_colour'] = drivers.get('team_colour').apply(lambda x: f"#{x}" if x else default_color)
         
-        # Find the team name column dynamically and assign to 'team_name'
         team_col = None
         for candidate in ('team_name', 'constructor', 'constructor_name'):
             if candidate in drivers.columns:
                 team_col = candidate
                 break
 
-        if team_col is None:
-            # Fallback to an empty string so callers can rely on the column existing
-            drivers['team_name'] = ''
-        else:
-            drivers['team_name'] = drivers[team_col]
+        drivers['team_name'] = drivers[team_col] if team_col else ''
 
-        # Select only what we need
         return drivers[['name_acronym', 'team_colour', 'team_name']].rename(columns={'name_acronym': 'driver_acronym'})
 
-    except Exception as e:
-        # API Unavailable, Network Error, or 'api' module missing
-        print(f"API Error (Using default colors): {e}")
-        return pd.DataFrame(columns=['driver_acronym', 'team_colour'])
+    except Exception:
+        return pd.DataFrame(columns=['driver_acronym', 'team_colour', 'team_name'])
 
-# ---------------------------
-# Race control data (safety car, VSC)
-# ---------------------------
+# --- RACE CONTROL EVENTS ---
 def get_safety_car_data(session_key):
     """
-    Fetches safety car and VSC deployment data for the session.
+    Fetches safety car and VSC deployment events for the session.
+    
+    Args:
+        session_key (int): Session identifier.
+        
+    Returns:
+        pd.DataFrame: Race control events (flag, message, lap number).
     """
     df = api.get_dataframe('race_control', {'session_key': session_key})
-    if df.empty:
-        return pd.DataFrame()
-    print(f"Fetched {len(df)} race control events(safety car, VSC).")
-    #print(df[['flag', 'message', 'lap_number']])
-    return df
-    
-
-
+    return df if not df.empty else pd.DataFrame()
 
 if __name__ == "__main__":
-    # For testing purposes
-    #print(get_race_replay_data(9858))
-    #print(get_safety_car_data(9850))
     pass

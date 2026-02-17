@@ -1,20 +1,18 @@
 import streamlit as st
 import matplotlib.pyplot as plt
 import pandas as pd
-import time
 import sys
 import os
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'DataCollection')))
 import storeRaceData as raceData
 
-# --- REFRESH CACHE --- #
-# Clear Streamlit caches once when the Dashboard page is first opened.
-# This forces fresh data for the whole app on first visit to this page, and maintains performance afterwards (when revisiting).
-st.cache_data.clear()        # clear @st.cache_data decorated results
-st.cache_resource.clear()    # clear @st.cache_resource decorated results
+# --- CACHE MANAGEMENT ---
+# Clear all caches on page load to ensure fresh data across the dashboard
+st.cache_data.clear()
+st.cache_resource.clear()
 
-
-# ---- GLOBAL THEME ----
+# --- THEME & STYLING ---
 st.markdown(
     """
     <style>
@@ -55,7 +53,6 @@ st.markdown(
             padding-top: 3rem !important;
         }
 
-        /* Hero */
         .hero-shell {
             background: linear-gradient(135deg, rgba(124, 242, 212, 0.12), rgba(122, 162, 255, 0.10));
             border: 1px solid var(--border);
@@ -92,7 +89,6 @@ st.markdown(
             font-size: 14px;
         }
 
-        /* Info Banner */
         .info-banner {
             background: rgba(122, 162, 255, 0.08);
             border: 1px solid rgba(122, 162, 255, 0.2);
@@ -103,7 +99,6 @@ st.markdown(
             font-size: 13px;
         }
 
-        /* Race Cards */
         div[data-testid="stVerticalBlock"] > div { gap: 1rem; }
 
         .race-card-header {
@@ -136,7 +131,6 @@ st.markdown(
             letter-spacing: 0.05em;
         }
 
-        /* Buttons */
         .stButton > button {
             border-radius: 12px;
             font-weight: 600;
@@ -148,7 +142,6 @@ st.markdown(
             transform: translateY(-2px);
         }
 
-        /* Section Titles */
         .section-title {
             font-size: 22px;
             font-weight: 700;
@@ -161,12 +154,12 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# --- Getter for Track Map Image --- #
+# --- HELPER FUNCTIONS ---
 @st.cache_data(show_spinner=False)
 def get_track_map_image(session_key):
     """
-    Wrapper to fetch and plot track map.
-    Cached so we don't re-query the DB on every button click.
+    Fetches and plots the track layout for a given session.
+    Results are cached to improve performance on repeated selections.
     """
     try:
         df = raceData.get_track_layout(session_key)
@@ -175,8 +168,8 @@ def get_track_map_image(session_key):
     except Exception:
         return None
 
-# --- Country to Flag Emoji --- #
 def get_flag(country_name):
+    """Maps country names to flag emojis."""
     flags = {
         "Bahrain": "🇧🇭", "Saudi Arabia": "🇸🇦", "Australia": "🇦🇺", "Japan": "🇯🇵",
         "China": "🇨🇳", "Miami": "🇺🇸", "USA": "🇺🇸", "United States": "🇺🇸",
@@ -187,7 +180,12 @@ def get_flag(country_name):
     }
     return flags.get(country_name, "🏁")
 
-# --- HERO & DESCRIPTION SECTION --- #
+@st.cache_data(ttl=3600)
+def get_cached_races():
+    """Fetches the race calendar. Cached for 1 hour to reduce API load."""
+    return raceData.tableOfRaces()
+
+# --- PAGE HEADER ---
 st.markdown(
     """
     <div class="hero-shell">
@@ -213,23 +211,23 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# --- RACE CALENDAR / SELECTION SECTION --- #
-@st.cache_data(ttl=3600)  # Cache data for 1 hour to fix performance and stress load on API fetches
-def get_cached_races():
-    return raceData.tableOfRaces()
-
-# --- MAIN SELECTION --- #
+# --- RACE CALENDAR ---
 session_df = get_cached_races()
 
 if session_df.empty:
     st.error("No race data available.")
 else:
-    # --- DEBUG / CONFIRMATION --- #
+    # Display confirmation of selected race
     if 'selected_session_key' in st.session_state:
-        st.success(f"**{st.session_state['selected_race_name']}** selected. Go to 'Race Replay' or 'Strategy Prediction' page to view analysis.")
+        st.success(f"**{st.session_state['selected_race_name']}** selected. Go to 'Race Replay' or 'Strategy Prediction' to view analysis.")
+    
+    # Prepare race data
     session_df['date_start'] = pd.to_datetime(session_df['date_start'])
+    session_df = session_df.sort_values(by='date_start', ascending=False)
+    
     st.markdown(f"<div class='section-title'>{raceData.get_season_year()} Race Calendar</div>", unsafe_allow_html=True)
-    session_df = session_df.sort_values(by='date_start', ascending=False) # Most recent first
+    
+    # Display races in a 3-column grid
     cols_per_row = 3
     rows = [session_df.iloc[i:i + cols_per_row] for i in range(0, len(session_df), cols_per_row)]
     
@@ -237,37 +235,33 @@ else:
         cols = st.columns(cols_per_row)
         for idx, (_, race) in enumerate(row_chunk.iterrows()):
             with cols[idx]:
-                
                 is_selected = st.session_state.get('selected_session_key') == race['session_key']
                 
-                # Flag & Country
+                # Race header with country flag
                 flag = get_flag(race['country_name'])
                 st.markdown(f"<div class='race-card-header'>{flag} {race['country_name'].upper()}</div>", unsafe_allow_html=True)
-
-                # Race Type (Race vs Sprint)
-                r_name = race.get('session_name', 'Race') 
-                st.markdown(f"<div class='race-type'>{r_name}</div>", unsafe_allow_html=True)
-
+                
+                # Session type (Race vs Sprint)
+                session_name = race.get('session_name', 'Race')
+                st.markdown(f"<div class='race-type'>{session_name}</div>", unsafe_allow_html=True)
+                
                 # Location
                 st.markdown(f"<div class='race-title'>{race['location']}</div>", unsafe_allow_html=True)
                 
                 # Date
                 date_str = race['date_start'].strftime("%d %b %Y")
                 st.markdown(f"<div class='race-date'>{date_str}</div>", unsafe_allow_html=True)
-
-                # Track Map
+                
+                # Track map visualization
                 track_fig = get_track_map_image(race['session_key'])
                 if track_fig:
-                    # Display the plot
-                    st.pyplot(track_fig, width='stretch', clear_figure=True)
+                    st.pyplot(track_fig, use_container_width=True, clear_figure=True)
                 else:
-                    # Fallback space if no data
                     st.markdown("<br><br>", unsafe_allow_html=True)
                 
-                # Action Button
-                if st.button("Select Race", key=f"btn_{race['session_key']}", width='stretch', type="primary" if is_selected else "secondary"):
+                # Selection button
+                button_type = "primary" if is_selected else "secondary"
+                if st.button("Select Race", key=f"btn_{race['session_key']}", use_container_width=True, type=button_type):
                     st.session_state['selected_session_key'] = race['session_key']
                     st.session_state['selected_race_name'] = race['location']
                     st.rerun()
-                
-                st.markdown("</div>", unsafe_allow_html=True)
