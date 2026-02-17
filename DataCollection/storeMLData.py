@@ -6,6 +6,23 @@ import openf1_helper as of1
 import weatherData as wd
 import sys, os; sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'DatabaseConnection')))
 import databaseManager as db
+from pathlib import Path
+
+# 1. Get the absolute path of the current file (app.py)
+current_file = Path(__file__).resolve()
+
+# 2. Get the folder where this file lives (RaceVisualiser)
+current_dir = current_file.parent
+
+# 3. Get the Project Root (One level up from RaceVisualiser)
+project_root = current_dir.parent
+
+# 4. Add the DatabaseConnection folder to sys.path
+db_path = os.path.join(project_root, 'DatabaseConnection')
+if db_path not in sys.path:
+    sys.path.append(db_path)
+
+import databaseManager as db
 
 api = of1.api
 session_key = None  # to be set when calling functions
