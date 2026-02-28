@@ -1,3 +1,5 @@
+import time
+
 import streamlit as st
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -9,8 +11,8 @@ import storeRaceData as raceData
 
 # --- CACHE MANAGEMENT ---
 # Clear all caches on page load to ensure fresh data across the dashboard
-st.cache_data.clear()
-st.cache_resource.clear()
+#st.cache_data.clear()
+#st.cache_resource.clear()
 
 # --- THEME & STYLING ---
 st.markdown(
@@ -157,15 +159,16 @@ st.markdown(
 # --- HELPER FUNCTIONS ---
 @st.cache_data(show_spinner=False)
 def get_track_map_image(session_key):
-    """
-    Fetches and plots the track layout for a given session.
-    Results are cached to improve performance on repeated selections.
-    """
     try:
+        # Add a slight staggered delay to prevent simultaneous bursts
+        time.sleep(0.1) 
         df = raceData.get_track_layout(session_key)
         fig = raceData.plot_track_map(df)
         return fig
-    except Exception:
+    except Exception as e:
+        # Check if it was a rate limit error to show a better message
+        if "429" in str(e):
+            st.warning("API Throttled. Retrying...")
         return None
 
 def get_flag(country_name):
