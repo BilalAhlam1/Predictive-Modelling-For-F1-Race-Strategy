@@ -19,6 +19,10 @@ api = of1.api
 SESSION_KEY = None
 
 # --- ASYNC HTTP REQUEST HELPER ---
+# Rate limiting for async requests
+_last_async_request_time = 0
+_async_request_lock = asyncio.Lock()
+
 async def fetch(session, url, params, max_retries=5):
     """
     Fetches data from API with exponential backoff retry logic.
@@ -34,6 +38,15 @@ async def fetch(session, url, params, max_retries=5):
     Returns:
         list: JSON response data, or empty list if all retries fail.
     """
+    global _last_async_request_time
+    
+    # Rate limiting: ensure minimum 300ms between async requests
+    async with _async_request_lock:
+        elapsed = time.time() - _last_async_request_time
+        if elapsed < 0.3:
+            await asyncio.sleep(0.3 - elapsed)
+        _last_async_request_time = time.time()
+    
     for attempt in range(max_retries):
         try:
             timeout = aiohttp.ClientTimeout(total=60)
@@ -202,7 +215,7 @@ async def fetchWithAPI():
     drivers = await get_drivers()
     all_records = []
 
-    semaphore = asyncio.Semaphore(2)
+    semaphore = asyncio.Semaphore(1)  # Process one driver at a time to avoid rate limiting
     tasks = [process_driver(d, semaphore) for d in drivers]
     for future in asyncio.as_completed(tasks):
         result = await future
@@ -294,17 +307,34 @@ def update_last_five_sessions():
     """
     Fetches and stores the last 5 completed race sessions from the API.
     Automatically removes telemetry for older sessions to keep database lean.
+    Searches backwards through seasons if current year has insufficient data.
     
     Returns:
-        bool: True if all 5 sessions processed successfully, False otherwise.
+        bool: True if at least one session processed successfully, False otherwise.
     """
-    try:
-        sessions_df = api.get_dataframe('sessions', {
-            'year': get_season_year(),
-            'session_type': 'Race'
-        })
-    except Exception:
-        return False
+    current_year = datetime.datetime.now().year
+    sessions_df = pd.DataFrame()
+    
+    # Try current and previous 2 years to find completed races
+    for year in range(current_year, current_year - 3, -1):
+        try:
+            year_sessions = api.get_dataframe('sessions', {
+                'year': year,
+                'session_type': 'Race'
+            })
+            
+            if not year_sessions.empty:
+                today = datetime.datetime.now().isoformat()
+                completed = year_sessions[year_sessions['date_start'] < today].copy()
+                
+                if not completed.empty:
+                    sessions_df = pd.concat([sessions_df, completed])
+                    
+                    # If we have enough races, stop searching
+                    if len(sessions_df) >= 5:
+                        break
+        except Exception:
+            continue
 
     if sessions_df.empty:
         return False
@@ -312,12 +342,13 @@ def update_last_five_sessions():
     sessions_df = sessions_df.sort_values('date_start')
     recent_sessions = sessions_df.tail(5)
     
-    all_success = True
+    success_count = 0
     for _, session in recent_sessions.iterrows():
-        if not check_and_update_DB(session['session_key']):
-            all_success = False
+        if check_and_update_DB(session['session_key']):
+            success_count += 1
 
-    recent_keys = sessions_df['session_key'].tail(5).tolist()
+    # Clean up old sessions
+    recent_keys = recent_sessions['session_key'].tolist()
     try:
         if len(recent_keys) == 1:
             keys_str = f"({recent_keys[0]})"
@@ -325,9 +356,10 @@ def update_last_five_sessions():
         elif len(recent_keys) > 1:
             db.execute_query(f"DELETE FROM race_telemetry WHERE session_key NOT IN {tuple(recent_keys)}")
     except Exception:
-        all_success = False
+        pass
 
-    return all_success
+    # Return True if at least one session was successfully loaded
+    return success_count > 0
 
 def tableOfRaces():
     """
