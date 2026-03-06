@@ -100,3 +100,5 @@ cd ..
 cd RaceVisualiser/
 streamlit run app.py
 ```
+
+<sub>**Note:** Initial data ingestion may take up to 20 minutes as the system fetches and standardizes 800+ laps of telemetry. Subsequent launches for cached races are near-instant; however, a new race session will trigger a one-time ingestion process for that specific data.</sub>
