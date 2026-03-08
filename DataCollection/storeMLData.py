@@ -263,16 +263,16 @@ def get_season_year(today=None, season_start_month=3):
 
 def update_last_five_sessions():
     """
-    Fetches and updates the last 5 completed race sessions from the API.
-    Automatically cleans up old session telemetry from the database.
+    Fetches and updates ML training data for the last 5 completed race sessions.
+    Uses the same race list as storeRaceData to keep ML data in sync with telemetry.
     
     Returns:
-        bool: True if all sessions updated successfully, False otherwise.
+        bool: True if at least one session updated successfully, False otherwise.
     """
     current_year = datetime.datetime.now().year
     sessions_df = pd.DataFrame()
     
-    # Search for completed races in the last 3 years
+    # Search for completed races in the last 3 years - ACCUMULATE across years
     for year in range(current_year, current_year - 3, -1):
         try:
             temp_df = api.get_dataframe('sessions', {
@@ -285,8 +285,12 @@ def update_last_five_sessions():
                 completed = temp_df[temp_df['date_start'] < today]
                 
                 if not completed.empty:
-                    sessions_df = completed
-                    break
+                    # Concatenate
+                    sessions_df = pd.concat([sessions_df, completed])
+                    
+                    # Stop if we have enough races
+                    if len(sessions_df) >= 5:
+                        break
         except Exception:
             continue
     
@@ -297,21 +301,24 @@ def update_last_five_sessions():
     sessions_df = sessions_df.sort_values('date_start')
     recent_sessions = sessions_df.tail(5)
     
-    all_success = True
+    success_count = 0
     for _, session in recent_sessions.iterrows():
-        if not updateMLData(session['session_key']):
-            all_success = False
+        print(f"Updating ML data for session {session['session_key']}...")
+        if updateMLData(session['session_key']):
+            success_count += 1
     
-    # Clean up telemetry data for sessions older than the 5 most recent
-    recent_keys = sessions_df['session_key'].tail(5).tolist()
+    # Clean up ML training data for old sessions
+    recent_keys = recent_sessions['session_key'].tolist()
     try:
-        if recent_keys:
-            keys_str = f"({recent_keys[0]})" if len(recent_keys) == 1 else str(tuple(recent_keys))
-            db.execute_query(f"DELETE FROM race_telemetry WHERE session_key NOT IN {keys_str}")
+        if len(recent_keys) == 1:
+            keys_str = f"({recent_keys[0]})"
+            db.execute_query(f"DELETE FROM ml_training_data WHERE session_key NOT IN {keys_str}")
+        elif len(recent_keys) > 1:
+            db.execute_query(f"DELETE FROM ml_training_data WHERE session_key NOT IN {tuple(recent_keys)}")
     except Exception:
-        all_success = False
+        pass
     
-    return all_success
+    return success_count > 0
 
 if __name__ == "__main__":
     update_last_five_sessions()

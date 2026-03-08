@@ -305,17 +305,48 @@ def get_season_year(today=None, season_start_month=3):
 
 def update_last_five_sessions():
     """
-    Fetches and stores the last 5 completed race sessions from the API.
-    Automatically removes telemetry for older sessions to keep database lean.
-    Searches backwards through seasons if current year has insufficient data.
+    Fetches and stores telemetry for the last 5 completed race sessions.
+    Uses tableOfRaces() to ensure telemetry matches exactly what appears in the dashboard menu.
     
     Returns:
         bool: True if at least one session processed successfully, False otherwise.
     """
-    current_year = datetime.datetime.now().year
-    sessions_df = pd.DataFrame()
+    # Get the exact same races that appear in the dashboard menu
+    recent_sessions = tableOfRaces()
     
-    # Try current and previous 2 years to find completed races
+    if recent_sessions.empty:
+        return False
+    
+    success_count = 0
+    for _, session in recent_sessions.iterrows():
+        if check_and_update_DB(session['session_key']):
+            success_count += 1
+
+    # Keep telemetry ONLY for these 5 races - delete everything else
+    recent_keys = recent_sessions['session_key'].tolist()
+    try:
+        if len(recent_keys) == 1:
+            keys_str = f"({recent_keys[0]})"
+            db.execute_query(f"DELETE FROM race_telemetry WHERE session_key NOT IN {keys_str}")
+        elif len(recent_keys) > 1:
+            db.execute_query(f"DELETE FROM race_telemetry WHERE session_key NOT IN {tuple(recent_keys)}")
+    except Exception:
+        pass
+
+    return success_count > 0
+
+def tableOfRaces():
+    """
+    Fetches the last 5 completed races from the current or previous seasons.
+    Searches backwards up to 3 years to ensure data availability.
+    
+    Returns:
+        pd.DataFrame: Recent race session data.
+    """
+    current_year = datetime.datetime.now().year
+    sessions_df = pd.DataFrame()  # Accumulate races across years
+    
+    # Collect completed races from current and previous years
     for year in range(current_year, current_year - 3, -1):
         try:
             year_sessions = api.get_dataframe('sessions', {
@@ -328,6 +359,7 @@ def update_last_five_sessions():
                 completed = year_sessions[year_sessions['date_start'] < today].copy()
                 
                 if not completed.empty:
+                    # Concatenate instead of returning immediately
                     sessions_df = pd.concat([sessions_df, completed])
                     
                     # If we have enough races, stop searching
@@ -337,58 +369,11 @@ def update_last_five_sessions():
             continue
 
     if sessions_df.empty:
-        return False
-
-    sessions_df = sessions_df.sort_values('date_start')
-    recent_sessions = sessions_df.tail(5)
+        return pd.DataFrame()
     
-    success_count = 0
-    for _, session in recent_sessions.iterrows():
-        if check_and_update_DB(session['session_key']):
-            success_count += 1
-
-    # Clean up old sessions
-    recent_keys = recent_sessions['session_key'].tolist()
-    try:
-        if len(recent_keys) == 1:
-            keys_str = f"({recent_keys[0]})"
-            db.execute_query(f"DELETE FROM race_telemetry WHERE session_key NOT IN {keys_str}")
-        elif len(recent_keys) > 1:
-            db.execute_query(f"DELETE FROM race_telemetry WHERE session_key NOT IN {tuple(recent_keys)}")
-    except Exception:
-        pass
-
-    # Return True if at least one session was successfully loaded
-    return success_count > 0
-
-def tableOfRaces():
-    """
-    Fetches the last 5 completed races from the current or previous seasons.
-    Searches backwards up to 3 years to ensure data availability.
-    
-    Returns:
-        pd.DataFrame: Recent race session data.
-    """
-    current_year = datetime.datetime.now().year
-    
-    for year in range(current_year, current_year - 3, -1):
-        try:
-            sessions_df = api.get_dataframe('sessions', {
-                'year': year,
-                'session_type': 'Race'
-            })
-            
-            if not sessions_df.empty:
-                today = datetime.datetime.now().isoformat()
-                completed_races = sessions_df[sessions_df['date_start'] < today].copy()
-                
-                if not completed_races.empty:
-                    completed_races = completed_races.sort_values('date_start', ascending=True)
-                    return completed_races.tail(5)
-        except Exception:
-            continue
-
-    return pd.DataFrame()
+    # Sort all races and return the 5 most recent
+    sessions_df = sessions_df.sort_values('date_start', ascending=True)
+    return sessions_df.tail(5)
 
 # --- TRACK LAYOUT & VISUALIZATION ---
 def get_track_layout(session_key):

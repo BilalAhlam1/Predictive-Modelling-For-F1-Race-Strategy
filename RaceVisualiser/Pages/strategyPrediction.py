@@ -211,8 +211,87 @@ except FileNotFoundError as e:
 def get_static_track(key):
     return raceData.get_track_layout(key)
 
-# --- PIT LOSS CALCULATION ---
-def get_historic_pit_loss(driver_id, session_key):
+# --- NEUTRALIZED LAPS (SC / VSC) ---
+def get_neutralized_laps(session_key):
+    """Returns laps likely run under SC or VSC conditions."""
+    sc_df = raceData.get_safety_car_data(session_key)
+    neutralized_laps = set()
+
+    if sc_df is None or sc_df.empty:
+        return neutralized_laps
+
+    data = sc_df.copy()
+    data.columns = [str(c).lower() for c in data.columns]
+
+    if 'lap_number' not in data.columns:
+        return neutralized_laps
+
+    if 'message' not in data.columns:
+        data['message'] = ''
+    if 'category' not in data.columns:
+        data['category'] = ''
+
+    data = data.sort_values('lap_number')
+    active_sc = False
+    active_vsc = False
+
+    # Set messages for each lap if its sc or vsc and add to neutralized laps set
+    # This is important for later when we want to exclude these laps from certain calculations like pit loss, 
+    # or apply different logic in the simulation for laps that are under safety car conditions.
+    for _, row in data.iterrows():
+        lap = row.get('lap_number')
+        if pd.isna(lap):
+            continue
+
+        lap = int(lap)
+        msg = str(row.get('message', '')).upper()
+        cat = str(row.get('category', '')).upper()
+        text_blob = f"{cat} {msg}"
+
+        # Start/End of VSC and SC laps
+        is_start_vsc = ('VSC' in text_blob or 'VIRTUAL SAFETY CAR' in text_blob) and ('DEPLOY' in text_blob or 'START' in text_blob)
+        is_end_vsc = ('VSC' in text_blob or 'VIRTUAL SAFETY CAR' in text_blob) and ('END' in text_blob or 'WITHDRAWN' in text_blob)
+        is_start_sc = ('SAFETY CAR' in text_blob) and ('VIRTUAL' not in text_blob) and ('DEPLOY' in text_blob or 'START' in text_blob)
+        is_end_sc = ('SAFETY CAR' in text_blob) and ('VIRTUAL' not in text_blob) and ('IN THIS LAP' in text_blob or 'END' in text_blob or 'WITHDRAWN' in text_blob)
+
+        if is_start_vsc:
+            active_vsc = True
+        if is_start_sc:
+            active_sc = True
+
+        if active_vsc or active_sc or is_start_vsc or is_start_sc or is_end_vsc or is_end_sc:
+            neutralized_laps.add(lap) # Now holds laps affected by VSC or SC
+
+        if is_end_vsc:
+            active_vsc = False
+        if is_end_sc:
+            active_sc = False
+
+    # Fallback: include pace outliers often caused by neutralization windows.
+    query = text(f"""
+        SELECT lap_number, AVG(lap_duration) AS avg_lap
+        FROM ml_training_data
+        WHERE session_key = {session_key}
+          AND lap_duration IS NOT NULL
+          AND lap_duration > 0
+        GROUP BY lap_number
+        ORDER BY lap_number
+    """)
+
+    with engine.connect() as conn:
+        pace_df = pd.read_sql(query, conn)
+
+    # Find laps higher than average poce as fallback
+    if not pace_df.empty:
+        baseline = float(pace_df['avg_lap'].median())
+        if baseline > 0:
+            anomaly = pace_df[pace_df['avg_lap'] > (baseline * 1.10)]
+            neutralized_laps.update(anomaly['lap_number'].astype(int).tolist())
+
+    return neutralized_laps
+
+#------------------ PIT LOSS CALCULATION ------------------#
+def get_historic_pit_loss(driver_id, session_key, neutralized_laps=None):
     """
     Calculates the average time lost during pit stops from historical session data.
     
@@ -226,6 +305,9 @@ def get_historic_pit_loss(driver_id, session_key):
     Returns:
         float: Average pit loss in seconds. Defaults to 22.0s if no valid data found.
     """
+    if neutralized_laps is None:
+        neutralized_laps = set()
+
     query = text(f"""
         SELECT driver_number, lap_number, lap_duration, is_pit_out_lap
         FROM ml_training_data 
@@ -260,12 +342,18 @@ def get_historic_pit_loss(driver_id, session_key):
             except Exception:
                 continue
             
+            # Exclude pit events affected by SC/VSC from the pit-loss baseline.
+            if (in_lap_idx in neutralized_laps) or (out_lap_idx in neutralized_laps):
+                continue
+
             # Get reference pace from 3 laps before pit stop
             ref_laps = [in_lap_idx - 1, in_lap_idx - 2, in_lap_idx - 3]
             clean_candidates = df_subset[
                 (df_subset['lap_number'].isin(ref_laps)) & 
                 (df_subset['is_pit_out_lap'] == 0)
             ]
+
+            clean_candidates = clean_candidates[~clean_candidates['lap_number'].isin(neutralized_laps)]
             
             if clean_candidates.empty:
                 continue
@@ -464,7 +552,7 @@ def check_traffic(current_lap, current_finish_time, predicted_pace, driver_id, t
         return predicted_pace, f"Chasing #{target_id}", None
 
 # --- CORE SIMULATION ENGINE ---
-def run_simulation(driver_id, session_key, start_lap, end_lap, pit_lap, historic_pit_lap, tire_compound, track_temp, air_temp, pace_bias=0.0, history_map=None):
+def run_simulation(driver_id, session_key, start_lap, end_lap, pit_lap, historic_pit_lap, tire_compound, track_temp, air_temp, pace_bias=0.0, history_map=None, neutralized_laps=None):
     """
     Main simulation loop that predicts lap times with traffic, tire degradation, and pit stop logic.
     
@@ -489,7 +577,10 @@ def run_simulation(driver_id, session_key, start_lap, end_lap, pit_lap, historic
     """
     
     # Pre-fetch historical pit loss, traffic map, and pace map for efficient access during simulation
-    historic_loss = get_historic_pit_loss(driver_id, session_key)
+    if neutralized_laps is None:
+        neutralized_laps = set()
+
+    historic_loss = get_historic_pit_loss(driver_id, session_key, neutralized_laps)
     traffic_map = build_traffic_map(session_key)
     pace_map = build_historic_pace_map(session_key)
     
@@ -530,14 +621,23 @@ def run_simulation(driver_id, session_key, start_lap, end_lap, pit_lap, historic
     for lap in range(start_lap, end_lap + 1):
         note = ""
         is_pit_lap = (lap == pit_lap)
-        should_use_history = (lap < pit_lap) and (lap < historic_pit_lap)
+        is_historic_pit_scenario = (pit_lap == historic_pit_lap)
+        historic_pit_is_neutralized = (historic_pit_lap in neutralized_laps) or ((historic_pit_lap - 1) in neutralized_laps)
+        force_historic_sc_window = is_historic_pit_scenario and historic_pit_is_neutralized and (lap in {historic_pit_lap - 1, historic_pit_lap})
+        force_historic_pit_lap = is_historic_pit_scenario and (lap == historic_pit_lap)
+        should_use_history = ((lap < pit_lap) and (lap < historic_pit_lap)) or force_historic_sc_window or force_historic_pit_lap
         
         # For laps before the pit stop, use historical data if available to ensure the simulation starts with a realistic baseline. After the pit stop, rely on model predictions and apply penalties for tire degradation and traffic. This approach allows us to leverage real data where it matters most for calibration, while still simulating the strategic impact of the new tire choice and pit timing.
         if should_use_history and (lap in history_map):
             final_time = history_map[lap]['lap_duration']
             current_virtual_compound = history_map[lap]['tire_compound']
             virtual_tire_age = history_map[lap]['tire_age']
-            note = "Historic Data"
+            if force_historic_pit_lap:
+                note = "Historic Pit Lap"
+            elif force_historic_sc_window:
+                note = "Historic SC Window"
+            else:
+                note = "Historic Data"
         
         else:
             # After the pit stop, we assume the driver is on the new tire compound. For laps before the pit stop, we keep the virtual tire state consistent with historical data to maintain accuracy in the early part of the simulation.
@@ -604,8 +704,12 @@ def run_simulation(driver_id, session_key, start_lap, end_lap, pit_lap, historic
             # If the current lap is the pit stop lap, we apply the historical pit loss penalty and check for traffic upon exit
             # For non-pit laps, we check for traffic based on the predicted finish time and adjust the lap time accordingly
             if is_pit_lap:
-                final_time = tentative_time + historic_loss
-                note = f"PIT STOP (+{historic_loss:.1f}s)"
+                adjusted_loss = historic_loss
+                if (lap in neutralized_laps) or ((lap - 1) in neutralized_laps):
+                    adjusted_loss = historic_loss * 0.45
+
+                final_time = tentative_time + adjusted_loss
+                note = f"PIT STOP (+{adjusted_loss:.1f}s)"
                 
                 estimated_exit_time = current_race_time + final_time # Current predicted finish time after applying pit loss
                 ignore_list = list(passed_cars_memory)
@@ -729,6 +833,8 @@ def calibrate_and_simulate(driver_id, session_key, start_lap, end_lap, pit_lap, 
     else:
         historic_compound = tire_compound
 
+    neutralized_laps = get_neutralized_laps(session_key)
+
     # Calibration phase
     control_df = run_simulation(
         driver_id, session_key, start_lap, end_lap, 
@@ -736,7 +842,8 @@ def calibrate_and_simulate(driver_id, session_key, start_lap, end_lap, pit_lap, 
         historic_pit_lap=historic_pit_lap,
         tire_compound=historic_compound, track_temp=track_temp, air_temp=air_temp, 
         pace_bias=0.0, # No bias during calibration to measure pure model error against historical data
-        history_map=historic_map
+        history_map=historic_map,
+        neutralized_laps=neutralized_laps
     )
     
     query = text(f"""
@@ -767,7 +874,8 @@ def calibrate_and_simulate(driver_id, session_key, start_lap, end_lap, pit_lap, 
         historic_pit_lap=historic_pit_lap,
         tire_compound=tire_compound, track_temp=track_temp, air_temp=air_temp, 
         pace_bias=bias, # Apply bias correction from calibration to adjust model predictions for a more accurate strategy simulation
-        history_map=historic_map
+        history_map=historic_map,
+        neutralized_laps=neutralized_laps
     )
     
     return final_df, bias
@@ -1110,7 +1218,8 @@ def simulate_stint(session_id, driver_id, pit_lap, historic_pit_lap, tire_compou
         track_temp=track_temp,
         air_temp=air_temp,
         pace_bias=bias_used,
-        history_map=history_map
+        history_map=history_map,
+        neutralized_laps=get_neutralized_laps(session_id)
     )
     acc_df, metrics = calculate_model_accuracy(control_sim_df, session_id, driver_id)
     
@@ -1342,6 +1451,15 @@ def start_simulation(session_key):
                             customdata=pred_customdata,
                             hovertemplate='Lap %{x}<br>Time: %{y:.3f}s<br>%{customdata}<extra></extra>',
                         ))
+                        # Add vertical line for historic pit lap
+                        lap_fig.add_vline(x=historic_pit_lap, line_dash="dash", line_color="blue", 
+                                        annotation_text=f"Historic Pit (Lap {historic_pit_lap})", 
+                                        annotation_position="top")
+
+                        # Add vertical line for selected/alternate pit lap
+                        lap_fig.add_vline(x=selected_pit_lap, line_dash="dash", line_color="orange",
+                                        annotation_text=f"Alternate Pit (Lap {selected_pit_lap})", 
+                                        annotation_position="bottom")
 
                     lap_fig.update_layout(
                         title=f"Lap Time Comparison for {selected_driver}",
