@@ -4,6 +4,9 @@ import pandas as pd
 import time
 import random
 
+# The following class is adapted and altered from the OpenF1 API usage example in the article:
+# “OpenF1 API in Action: Building a Google Colab Notebook for F1 Race Analysis”
+# https://python.plainenglish.io/openf1-api-in-action-building-a-google-colab-notebook-for-f1-race-analysis-fee86c301e5b
 class OpenF1API:
     """Helper class for interacting with the OpenF1 API."""
     def __init__(self):

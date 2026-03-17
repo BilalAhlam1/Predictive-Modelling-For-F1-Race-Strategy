@@ -270,6 +270,7 @@ def update_last_five_sessions():
         bool: True if at least one session updated successfully, False otherwise.
     """
     current_year = datetime.datetime.now().year
+    current_year = 2025 # For reproducible sessions tested during development
     sessions_df = pd.DataFrame()
     
     # Search for completed races in the last 3 years - ACCUMULATE across years
@@ -303,7 +304,7 @@ def update_last_five_sessions():
     
     success_count = 0
     for _, session in recent_sessions.iterrows():
-        print(f"Updating ML data for session {session['session_key']}...")
+        #print(f"Updating ML data for session {session['session_key']}...")
         if updateMLData(session['session_key']):
             success_count += 1
     
