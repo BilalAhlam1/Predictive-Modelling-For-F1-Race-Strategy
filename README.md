@@ -88,7 +88,7 @@ source venv/bin/activate
 # Install required packages
 pip install -r requirements.txt
 ```
-### 3. Initialise local database
+### 3. Initialise local database (Only required on initial launch)
 ```bash
 cd DatabaseConnection/
 python createDatabase.py
