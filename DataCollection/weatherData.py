@@ -18,13 +18,13 @@ def get_weather_data(session_key):
             print("Warning: No weather data found.")
             return pd.DataFrame()
 
-        # Convert timestamp to datetime (Crucial for merging)
+        # Convert timestamp to datetime
         weather_df['date'] = pd.to_datetime(weather_df['date'])
 
         # Sort by date (Required for merge_asof)
         weather_df = weather_df.sort_values('date')
 
-        # Select only columns relevant to the Predictive Model (Phase 2)
+        # Select only columns relevant to the Predictive Model
         # rainfall & track_temperature are key for tyre strategy
         keep_cols = ['date', 'rainfall', 'air_temperature', 'track_temperature', 'humidity']
         

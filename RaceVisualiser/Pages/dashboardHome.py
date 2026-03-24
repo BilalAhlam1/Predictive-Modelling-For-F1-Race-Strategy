@@ -183,7 +183,7 @@ def get_flag(country_name):
     }
     return flags.get(country_name, "🏁")
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600) # Cache for 1 hour to reduce API load
 def get_cached_races():
     """Fetches the race calendar. Cached for 1 hour to reduce API load."""
     return raceData.tableOfRaces()

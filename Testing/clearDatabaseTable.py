@@ -8,7 +8,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'D
 import databaseManager as db
 
 # --- CONFIGURATION ---
-# CHANGE THIS to the session you want to delete
+# CHANGE THIS to the session to delete
 SESSION_TO_DELETE = 9939 
 
 def clear_session_data(session_key):

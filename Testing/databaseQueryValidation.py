@@ -34,7 +34,7 @@ def validate_data(db_df, api_df):
         print("API DataFrame is empty.")
         return False
 
-    # --- 1. Check for Missing Drivers ---
+    # --- Check for Missing Drivers ---
     db_drivers = set(db_df['driver_number'].unique())
     api_drivers = set(api_df['driver_number'].unique())
     
@@ -108,8 +108,6 @@ def store():
         print(f"Data ready with {len(df)} rows for session {SESSION_KEY}.")
 
 def test_storage_and_validation():
-    # Replace ml with rd to store race telemetry data instead and vice versa
-
     # Run the storage logic
     store()
     
