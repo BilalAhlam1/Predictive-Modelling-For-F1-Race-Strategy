@@ -1,7 +1,7 @@
 # Core Frameworks
-streamlit==1.42.0
-pandas==2.2.3
-numpy==1.26.4
+streamlit==1.42.0          # Web dashboard and simulation interface
+pandas==2.2.3               # High-dimensional telemetry data processing
+numpy==1.26.4                # Numerical computations and coordinate interpolation
 
 # Machine Learning
 scikit-learn==1.4.2         # Random Forest and Linear Regression models
