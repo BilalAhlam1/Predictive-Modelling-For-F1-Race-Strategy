@@ -1,18 +1,11 @@
-# Core Frameworks
-streamlit==1.42.0          # Web dashboard and simulation interface
-pandas==2.2.3               # High-dimensional telemetry data processing
-numpy==1.26.4                # Numerical computations and coordinate interpolation
-
-# Machine Learning
-scikit-learn==1.4.2         # Random Forest and Linear Regression models
-joblib==1.3.2               # Serializing and loading trained models
-
-# Data Acquisition & Management
-requests==2.31.0             # HTTP library for OpenF1 API interaction
-aiohttp==3.9.5              # Async HTTP client for OpenF1 API interaction
-sqlalchemy==2.0.3           # SQL toolkit for local SQLite database management
-
-# Visualization
-plotly==5.18.0              # Dynamic analytical charts and 2D track maps
-matplotlib==3.8.3           # Static visualizations and debugging plots
-scipy==1.12.0               # Advanced interpolation (Akima method)
+streamlit==1.52.1
+pandas==2.2.3
+numpy==2.1.3
+scikit-learn==1.6.1
+joblib==1.4.2
+requests==2.32.3
+aiohttp==3.11.10
+sqlalchemy==2.0.43
+plotly==5.24.1
+matplotlib==3.10.0
+scipy==1.15.3

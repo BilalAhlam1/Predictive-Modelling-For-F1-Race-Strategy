@@ -11,8 +11,9 @@ Quick Start:
 2. In the terminal, run:
    cd RaceVisualiser
    streamlit run app.py
-3. Use the dashboard (http://localhost:8501) to explore race simulations and predictions  
+3. Use the dashboard (http://127.0.0.1:8501) to explore race simulations and predictions  
 
+⚠️ If you encounter any issues (e.g. Python not found, dependencies failing), see the Troubleshooting section below.
 Note: No additional configuration is required if the included database is present (found at DatabaseConnection/f1_strategy.db). Dependency installation can be found in the Installation and Usage Guide.
 
 -----
@@ -56,13 +57,42 @@ Features
 
 -----
 
+Prerequisites: Install Python 3.11
+
+Download Python
+Go to https://www.python.org/downloads/ and download Python 3.11 for your operating system.
+
+Install Python
+Run the installer and make sure pip is included.
+On Windows, tick the option Add Python to PATH during installation.
+
+Verify installation
+Open a terminal and run:
+
+Windows:
+python --version
+
+macOS/Linux:
+python3 --version
+
+Verify pip
+Run:
+
+Windows:
+pip --version
+
+macOS/Linux:
+pip3 --version
+
+If Python is not installed, the dashboard cannot be executed from source code.
+
 Installation and Usage Guide
 1.    Extract Project Files
         Extract the provided .zip file and open the folder in Visual Studio Code (File → Open Folder).
 
 2.    Install Dependencies
         Open a terminal and run:
-
+        
         python -m venv venv
 
         Windows:
@@ -87,10 +117,60 @@ Installation and Usage Guide
         cd RaceVisualiser
         streamlit run app.py
 
-        This will launch on http://localhost:8501
+        This will launch on http://127.0.0.1:8501
+        Note:
+        On first run, Streamlit may prompt for an email address in the terminal.
+        This is optional — simply press Enter to skip and continue launching the app.
 
 Note:
 A cached database is included. If the database is empty, initial data ingestion may take up to 20 minutes as the system retrieves and processes over 800 laps of telemetry data. Subsequent runs are significantly faster due to caching, though new race sessions may still require initial processing.
+
+-----
+
+Troubleshooting & Common Setup Issues
+
+Python command not found
+        Symptom: command not found: python
+        Cause: macOS/Linux often exposes Python as python3, not python.
+        Fix:
+        Check: python3 --version
+        Create environment with: python3.11 -m venv venv
+        Activate: source venv/bin/activate
+Dependency install fails at pandas with compiler errors
+        Symptom: metadata-generation-failed, Meson compiler errors, Unknown compiler(s)
+        Cause: wrong Python version (for example 3.13) causing source build attempts.
+        Fix:
+        Use Python 3.11.x
+        Recreate virtual environment:
+        deactivate
+        rm -rf venv
+        python3.11 -m venv venv
+        source venv/bin/activate
+        Upgrade packaging tools:
+        python -m pip install --upgrade pip setuptools wheel
+        Reinstall:
+        python -m pip install -r requirements.txt
+Streamlit command not found
+        Symptom: command not found: streamlit
+        Cause: dependencies not installed in current virtual environment, or command path mismatch.
+        Fix:
+        Ensure venv is active
+        Install dependencies again:
+        python -m pip install -r requirements.txt
+        Run using module form:
+        python -m streamlit run app.py
+Safari blocks local URL with HTTPS-only message
+        Symptom: navigation failed because request was for HTTP URL with HTTPS-only enabled
+        Fix:
+        Open http://127.0.0.1:8501 instead of https://localhost:8501
+        If needed, disable HTTPS-only behavior for local testing in Safari settings
+        Alternative: use Chrome or Firefox for local Streamlit testing
+        Version check
+        Run:
+        python --version
+        python -m pip --version
+        python -m streamlit version
+        Expected for this project: Python 3.11.x and dependency versions in requirements.txt
 
 -----
 
